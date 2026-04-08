@@ -1,0 +1,125 @@
+"""
+Router: /api/v1/analyze-risk
+"""
+from __future__ import annotations
+
+from fastapi import APIRouter, Request, HTTPException
+from pydantic import BaseModel, Field, field_validator
+
+from services.threat_engine import ThreatLevel
+from services.alert_service import AlertService
+
+router = APIRouter()
+alert_svc = AlertService()
+
+
+class RiskInput(BaseModel):
+    location_risk: int = Field(..., ge=0, le=255, description="Location danger score 0-255")
+    time_risk:     int = Field(..., ge=0, le=255, description="Time-of-day risk score 0-255")
+    motion_risk:   int = Field(..., ge=0, le=255, description="Abnormal motion score 0-255")
+    audio_risk:    int = Field(..., ge=0, le=255, description="Audio classification risk 0-255")
+    audio_class:   str = Field(default="N/A", description="Audio class label from ML model")
+
+
+class RiskResponse(BaseModel):
+    combined_score: float
+    moving_avg:     float
+    threat_level:   ThreatLevel
+    alert_triggered: bool
+    window_scores:  list[float]
+    state_color:    str
+    recommendation: str
+    timestamp:      float
+
+
+def _state_color(level: ThreatLevel) -> str:
+    return {
+        ThreatLevel.SAFE:       "#22c55e",   # green
+        ThreatLevel.SUSPICIOUS: "#f59e0b",   # amber
+        ThreatLevel.HIGH:       "#f97316",   # orange
+        ThreatLevel.CRITICAL:   "#ef4444",   # red
+    }[level]
+
+
+def _recommendation(level: ThreatLevel) -> str:
+    return {
+        ThreatLevel.SAFE:       "Environment appears safe. Continue monitoring.",
+        ThreatLevel.SUSPICIOUS: "Anomalies detected. Stay alert and consider moving to a safer area.",
+        ThreatLevel.HIGH:       "High threat indicators! Move to a public area or contact someone.",
+        ThreatLevel.CRITICAL:   "CRITICAL THREAT! Emergency alert sent. Move to safety immediately.",
+    }[level]
+
+
+@router.post("/analyze-risk", response_model=RiskResponse)
+async def analyze_risk(payload: RiskInput, request: Request):
+    """
+    Analyze multi-modal risk inputs through the FSM threat engine.
+    Returns current threat level, combined score, and sliding-window state.
+    Auto-triggers alerts when CRITICAL threshold is reached (with cooldown).
+    """
+    engine = request.app.state.threat_engine
+    snap   = engine.analyze(
+        location_risk=payload.location_risk,
+        time_risk=payload.time_risk,
+        motion_risk=payload.motion_risk,
+        audio_risk=payload.audio_risk,
+    )
+
+    # If engine flagged alert and we should dispatch
+    if snap.alert_triggered:
+        import asyncio
+        asyncio.create_task(
+            alert_svc.trigger_critical_alert(
+                threat_level=snap.threat_level.value,
+                combined_score=snap.combined_score,
+                location_risk=payload.location_risk,
+                time_risk=payload.time_risk,
+                motion_risk=payload.motion_risk,
+                audio_risk=payload.audio_risk,
+                audio_class=payload.audio_class,
+            )
+        )
+
+    return RiskResponse(
+        combined_score=snap.combined_score,
+        moving_avg=snap.moving_avg,
+        threat_level=snap.threat_level,
+        alert_triggered=snap.alert_triggered,
+        window_scores=engine.window_scores,
+        state_color=_state_color(snap.threat_level),
+        recommendation=_recommendation(snap.threat_level),
+        timestamp=snap.timestamp,
+    )
+
+
+@router.get("/history")
+async def get_history(request: Request, limit: int = 50):
+    """Return recent risk analysis history."""
+    engine = request.app.state.threat_engine
+    history = engine.history[-limit:]
+    return {
+        "count": len(history),
+        "items": [
+            {
+                "timestamp":     s.timestamp,
+                "threat_level":  s.threat_level.value,
+                "combined_score": s.combined_score,
+                "moving_avg":    s.moving_avg,
+                "inputs": {
+                    "location": s.location_risk,
+                    "time":     s.time_risk,
+                    "motion":   s.motion_risk,
+                    "audio":    s.audio_risk,
+                },
+                "alert_triggered": s.alert_triggered,
+            }
+            for s in history
+        ],
+    }
+
+
+@router.post("/reset")
+async def reset_engine(request: Request):
+    """Hard-reset the FSM to SAFE state."""
+    request.app.state.threat_engine.reset()
+    return {"status": "reset", "state": "SAFE"}

@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-safe:       #22c55e;
+  --color-suspicious: #f59e0b;
+  --color-high:       #f97316;
+  --color-critical:   #ef4444;
+  --color-base:       #080810;
+  --color-surface:    #1a1a2e;
+  --color-border:     rgba(255,255,255,0.08);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background-color: var(--color-base);
+  color: #e2e8f0;
+  font-family: 'DM Sans', sans-serif;
+  margin: 0;
+  overflow-x: hidden;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0f0f1a; }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* Scan line overlay */
+.scan-overlay {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.03) 2px,
+    rgba(0,0,0,0.03) 4px
+  );
+  z-index: 9999;
+}
+
+/* Glassmorphism card */
+.glass {
+  background: rgba(26, 26, 46, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border);
+}
+
+/* Threat level glow utilities */
+.glow-safe       { box-shadow: 0 0 20px rgba(34,197,94,0.25); }
+.glow-suspicious { box-shadow: 0 0 20px rgba(245,158,11,0.25); }
+.glow-high       { box-shadow: 0 0 20px rgba(249,115,22,0.35); }
+.glow-critical   { box-shadow: 0 0 30px rgba(239,68,68,0.5), 0 0 60px rgba(239,68,68,0.2); }
+
+/* Animated risk gauge */
+@keyframes spin-slow { to { transform: rotate(360deg); } }
+.spin-slow { animation: spin-slow 8s linear infinite; }
+
+/* Pulse ring for critical state */
+@keyframes ping-red {
+  75%, 100% { transform: scale(1.8); opacity: 0; }
+}
+.ping-red { animation: ping-red 1s cubic-bezier(0,0,0.2,1) infinite; }
+
+/* Grid noise texture */
+.noise::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events: none;
+  opacity: 0.4;
+}
