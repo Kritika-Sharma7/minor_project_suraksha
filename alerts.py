@@ -6,7 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from services.alert_service import AlertService
+from alert_service import AlertService
 
 router = APIRouter()
 alert_svc = AlertService()
@@ -52,10 +52,15 @@ async def trigger_alert(payload: ManualAlertRequest):
 async def alert_status():
     """Returns alert service configuration status (no secrets exposed)."""
     from config import settings
+    import storage
+    contacts = storage.list_contacts()
     return {
         "sms_configured":   bool(settings.twilio_account_sid and settings.twilio_auth_token),
         "email_configured": bool(settings.smtp_user and settings.smtp_password),
         "cooldown_seconds": settings.alert_cooldown_seconds,
         "alert_to_number":  f"***{settings.alert_to_number[-4:]}" if settings.alert_to_number else None,
         "alert_email_to":   settings.alert_email_to,
+        "contact_count": len(contacts),
+        "contacts_with_phone": len([c for c in contacts if c.get("phone")]),
+        "contacts_with_email": len([c for c in contacts if c.get("email")]),
     }

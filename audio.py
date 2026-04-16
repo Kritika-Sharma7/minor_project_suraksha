@@ -6,7 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from pydantic import BaseModel
 
-from services.audio_ml import AudioMLService
+from audio_ml import AudioMLService
 
 router = APIRouter()
 audio_svc = AudioMLService()
@@ -23,10 +23,11 @@ class AudioResponse(BaseModel):
 _DESCRIPTIONS = {
     "scream":   "Scream detected — high likelihood of distress or emergency.",
     "distress": "Distress sounds detected — elevated concern for safety.",
+    "fight":    "Possible fight or aggressive crowd noise detected.",
     "normal":   "No threatening audio detected — environment appears calm.",
 }
 
-_EMOJIS = {"scream": "🆘", "distress": "⚠️", "normal": "✅"}
+_EMOJIS = {"scream": "🆘", "distress": "⚠️", "fight": "🥊", "normal": "✅"}
 
 
 @router.post("/audio-detect", response_model=AudioResponse)

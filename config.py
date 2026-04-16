@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_port: int = 8000
     allowed_origins: List[str] = ["http://localhost:3000"]
+    db_path: str = "suraksha.db"
 
     # Twilio
     twilio_account_sid: str = ""
@@ -26,6 +27,8 @@ class Settings(BaseSettings):
     high_threshold: int = 128
     suspicious_threshold: int = 64
     window_size: int = 5
+    event_persistence_frames: int = 3
+    default_alert_threshold: int = 192
 
     class Config:
         env_file = ".env"

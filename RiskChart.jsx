@@ -3,7 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine,
 } from 'recharts'
-import { useSafetyStore } from '../store/safetyStore'
+import { useSafetyStore } from './safetyStore'
 
 const THREAT_COLORS = {
   SAFE: '#22c55e', SUSPICIOUS: '#f59e0b', HIGH: '#f97316', CRITICAL: '#ef4444',
@@ -30,7 +30,7 @@ export default function RiskChart() {
   if (chartData.length === 0) {
     return (
       <div className="glass rounded-2xl p-5 h-48 flex items-center justify-center">
-        <p className="text-slate-600 text-sm font-mono">Run analysis to see live chart</p>
+        <p className="text-slate-600 text-sm font-mono">Waiting for live sensor stream...</p>
       </div>
     )
   }
@@ -40,7 +40,7 @@ export default function RiskChart() {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="font-display font-bold text-sm tracking-widest text-white">RISK TIMELINE</h2>
-          <p className="text-xs text-slate-500">Last 30 analysis points</p>
+          <p className="text-xs text-slate-500">Live stream from WebSocket risk engine</p>
         </div>
         <div className="flex gap-3 text-[10px] font-mono text-slate-500">
           <span className="flex items-center gap-1">

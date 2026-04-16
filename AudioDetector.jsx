@@ -1,13 +1,14 @@
 import React, { useRef, useState } from 'react'
 import { Upload, Mic, Loader2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useSafetyStore } from '../store/safetyStore'
-import { detectAudio } from '../utils/api'
+import { useSafetyStore } from './safetyStore'
+import { detectAudio } from './apiClient'
 import toast from 'react-hot-toast'
 
 const CLASS_META = {
   scream:   { emoji: '🆘', color: '#ef4444', label: 'Scream Detected',   desc: 'Emergency audio detected' },
   distress: { emoji: '⚠️', color: '#f97316', label: 'Distress Sound',    desc: 'Possible distress signal' },
+  fight:    { emoji: '🥊', color: '#f43f5e', label: 'Fight Sound',       desc: 'Aggressive altercation pattern detected' },
   normal:   { emoji: '✅', color: '#22c55e', label: 'Normal Audio',      desc: 'No threats detected' },
 }
 

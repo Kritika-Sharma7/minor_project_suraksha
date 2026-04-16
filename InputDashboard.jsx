@@ -1,184 +1,135 @@
-import React, { useState } from 'react'
-import { MapPin, Clock, Activity, Mic, Zap, RotateCcw } from 'lucide-react'
+import React from 'react'
+import { MapPin, Clock, Activity, Mic, Waves, Shield, Terminal, Zap, Info, TrendingUp } from 'lucide-react'
+import { useSafetyStore } from './safetyStore'
 import { motion } from 'framer-motion'
-import { useSafetyStore } from '../store/safetyStore'
-import { analyzeRisk } from '../utils/api'
-import toast from 'react-hot-toast'
 
-const INPUTS = [
-  { key: 'locationRisk', apiKey: 'location_risk', label: 'Location Risk',  Icon: MapPin,   desc: 'Danger level of current area' },
-  { key: 'timeRisk',     apiKey: 'time_risk',     label: 'Time Risk',      Icon: Clock,    desc: 'Risk based on time of day' },
-  { key: 'motionRisk',   apiKey: 'motion_risk',   label: 'Motion Risk',    Icon: Activity, desc: 'Abnormal movement detection' },
-  { key: 'audioRisk',    apiKey: 'audio_risk',    label: 'Audio Risk',     Icon: Mic,      desc: 'Environmental sound analysis' },
-]
-
-function scoreColor(val) {
-  if (val >= 192) return '#ef4444'
-  if (val >= 128) return '#f97316'
-  if (val >= 64)  return '#f59e0b'
-  return '#22c55e'
-}
-
-function RiskSlider({ config, value, onChange }) {
-  const { label, Icon, desc } = config
-  const color = scoreColor(value)
-  const pct   = (value / 255) * 100
-
+function SignalCard({ title, value, icon: Icon, desc, active, color = 'primary' }) {
+  const pct = (value / 255) * 100
   return (
-    <div className="glass rounded-xl p-4">
-      <div className="flex items-center justify-between mb-3">
+    <div
+      className="glass rounded-2xl p-4 border relative overflow-hidden transition-all duration-300 group hover:bg-white/[0.02]"
+      style={{ borderColor: active ? `var(--${color}-color)40` : 'rgba(255,255,255,0.05)' }}
+    >
+      <div className="flex items-center justify-between mb-3 relative z-10">
         <div className="flex items-center gap-2">
-          <div
-            className="w-7 h-7 rounded-lg flex items-center justify-center"
-            style={{ background: `${color}18`, border: `1px solid ${color}40` }}
-          >
-            <Icon size={14} style={{ color }} />
+          <div className={`p-1.5 rounded-lg ${active ? 'bg-primary/10' : 'bg-white/5'}`}>
+            <Icon size={14} className={active ? 'text-primary' : 'text-slate-500'} />
           </div>
-          <div>
-            <p className="text-sm font-medium text-white">{label}</p>
-            <p className="text-[10px] text-slate-500">{desc}</p>
-          </div>
+          <p className="text-[10px] text-white font-black tracking-widest uppercase opacity-70">{title}</p>
         </div>
-        <div className="text-right">
-          <motion.span
-            className="font-display font-bold text-lg leading-none"
-            animate={{ color }}
-            transition={{ duration: 0.3 }}
-          >
-            {value}
-          </motion.span>
-          <span className="text-slate-600 text-xs">/255</span>
+        <div className="flex items-center gap-1">
+           <span className={`w-1 h-1 rounded-full ${active ? 'bg-primary animate-pulse' : 'bg-slate-700'}`} />
+           <span className="text-[8px] font-black text-slate-500 font-mono tracking-tighter">LIVE</span>
         </div>
       </div>
-
-      {/* Custom slider */}
-      <div className="relative">
-        <div className="w-full h-2 rounded-full bg-white/5 overflow-hidden">
-          <motion.div
-            className="h-full rounded-full"
-            animate={{ width: `${pct}%`, background: color }}
-            transition={{ duration: 0.2 }}
-            style={{ boxShadow: `0 0 8px ${color}80` }}
-          />
-        </div>
-        <input
-          type="range" min={0} max={255} value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
-          className="absolute inset-0 w-full opacity-0 cursor-pointer h-2"
-        />
+      
+      <div className="flex items-end justify-between mb-4 relative z-10">
+        <span className="font-display text-3xl font-black text-white">{value}</span>
+        <span className="text-[10px] text-slate-500 font-mono">INTENSITY</span>
       </div>
 
-      {/* Quick presets */}
-      <div className="flex gap-1 mt-2">
-        {[0, 64, 128, 192, 255].map((v) => (
-          <button
-            key={v}
-            onClick={() => onChange(v)}
-            className="flex-1 text-[9px] font-mono py-0.5 rounded transition-colors"
-            style={{
-              background: value === v ? `${scoreColor(v)}25` : 'rgba(255,255,255,0.04)',
-              color:      value === v ? scoreColor(v) : '#64748b',
-              border:     `1px solid ${value === v ? scoreColor(v) + '40' : 'transparent'}`,
-            }}
-          >
-            {v}
-          </button>
-        ))}
+      <p className="text-[10px] text-slate-400 font-medium mb-3 min-h-[1.5rem] leading-tight relative z-10">{desc}</p>
+      
+      <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden relative z-10">
+         <motion.div 
+           className="h-full bg-primary"
+           initial={{ width: 0 }}
+           animate={{ width: `${pct}%` }}
+           style={{ filter: `drop-shadow(0 0 5px var(--primary-color))` }}
+         />
       </div>
     </div>
   )
 }
 
 export default function InputDashboard() {
-  const store = useSafetyStore()
-  const { isAnalyzing, audioClass } = store
-  const [lastResult, setLastResult] = useState(null)
+  const {
+    locationRisk,
+    timeRisk,
+    motionRisk,
+    audioRisk,
+    sensorFrame,
+    sensorsEnabled,
+    backgroundMonitoring,
+    setBackgroundMonitoring,
+    profile,
+    riskDelta,
+    liveEvents,
+    trend,
+    getThreatMeta
+  } = useSafetyStore()
 
-  const handleAnalyze = async () => {
-    store.setIsAnalyzing(true)
-    try {
-      const payload = {
-        location_risk: store.locationRisk,
-        time_risk:     store.timeRisk,
-        motion_risk:   store.motionRisk,
-        audio_risk:    store.audioRisk,
-        audio_class:   store.audioClass,
-      }
-      const result = await analyzeRisk(payload)
-      store.setAnalysisResult(result)
-      setLastResult(result)
-
-      if (result.alert_triggered) {
-        toast.error('🚨 CRITICAL ALERT TRIGGERED — Emergency contacts notified!', { duration: 6000 })
-      } else {
-        toast.success(`Analysis complete: ${result.threat_level}`, { duration: 2000 })
-      }
-    } catch (err) {
-      toast.error(err.message)
-    } finally {
-      store.setIsAnalyzing(false)
-    }
-  }
-
-  const handleReset = () => {
-    INPUTS.forEach(({ key }) => store.setInput(key, 0))
-  }
+  const meta = getThreatMeta()
 
   return (
-    <div className="glass rounded-2xl p-5">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="font-display font-bold text-sm tracking-widest text-white">INPUT DASHBOARD</h2>
-          <p className="text-xs text-slate-500 mt-0.5">Adjust risk parameters and analyze</p>
-        </div>
-        <button
-          onClick={handleReset}
-          className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-white transition-colors font-mono"
-        >
-          <RotateCcw size={12} />
-          RESET
-        </button>
+    <div className="w-full space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <SignalCard
+          title="Location Depth"
+          value={locationRisk}
+          icon={MapPin}
+          desc={sensorFrame.location.lat ? `Accuracy: ±${sensorFrame.location.accuracy.toFixed(1)}m | Iso: ${sensorFrame.location.isolation.toFixed(2)}` : 'Waiting for GPS anchor...'}
+          active={sensorsEnabled.location}
+        />
+        <SignalCard
+          title="Temporal Context"
+          value={timeRisk}
+          icon={Clock}
+          desc={`Weight: ${useSafetyStore.getState().weights.time.toFixed(2)} | Cycle: ${timeRisk > 100 ? 'Nocturnal' : 'Diurnal'}`}
+          active
+        />
+        <SignalCard
+          title="Kinetic Vector"
+          value={motionRisk}
+          icon={Activity}
+          desc={`Acceleration: ${sensorFrame.motion.accelMag.toFixed(2)}m/s² | Shake: ${sensorFrame.motion.shakeScore.toFixed(2)}`}
+          active={sensorsEnabled.motion}
+        />
+        <SignalCard
+          title="Acoustic Profile"
+          value={audioRisk}
+          icon={Mic}
+          desc={`ZCR: ${sensorFrame.audio.zcr.toFixed(3)} | Freq: ${Math.round(sensorFrame.audio.freq)}Hz`}
+          active={sensorsEnabled.microphone}
+        />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-        {INPUTS.map(({ key, ...rest }) => (
-          <RiskSlider
-            key={key}
-            config={{ ...rest }}
-            value={store[key]}
-            onChange={(v) => store.setInput(key, v)}
-          />
-        ))}
-      </div>
-
-      {/* Audio class badge */}
-      {audioClass !== 'N/A' && (
-        <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-white/5 border border-white/10">
-          <Mic size={13} className="text-slate-400" />
-          <span className="text-xs text-slate-400 font-mono">
-            Audio class from ML: <span className="text-white font-medium">{audioClass.toUpperCase()}</span>
-          </span>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Momentum Indicator */}
+        <div className="glass rounded-2xl p-5 border border-white/5">
+          <div className="flex items-center gap-2 mb-3">
+             <TrendingUp size={14} className="text-secondary" />
+             <h3 className="text-[10px] font-black tracking-widest text-slate-500 uppercase">MOMENTUM</h3>
+          </div>
+          <div className="flex items-baseline gap-2">
+            <span className={`text-4xl font-display font-black ${riskDelta > 0 ? 'text-red-400' : 'text-primary'}`}>
+               {riskDelta > 0 ? '+' : ''}{Math.round(riskDelta)}
+            </span>
+            <span className="text-[10px] font-mono text-slate-600">Points / sec</span>
+          </div>
         </div>
-      )}
 
-      {/* Analyze button */}
-      <motion.button
-        onClick={handleAnalyze}
-        disabled={isAnalyzing}
-        whileTap={{ scale: 0.97 }}
-        className="w-full py-3 rounded-xl font-display font-bold tracking-widest text-sm flex items-center justify-center gap-2 transition-all duration-300"
-        style={{
-          background: isAnalyzing
-            ? 'rgba(255,255,255,0.05)'
-            : 'linear-gradient(135deg, #ef444420, #f9731620)',
-          border:  '1px solid rgba(239,68,68,0.4)',
-          color:   isAnalyzing ? '#64748b' : '#ef4444',
-          boxShadow: isAnalyzing ? 'none' : '0 0 20px rgba(239,68,68,0.15)',
-        }}
-      >
-        <Zap size={16} />
-        {isAnalyzing ? 'ANALYZING…' : 'ANALYZE THREAT'}
-      </motion.button>
+        {/* Intelligence Feed */}
+        <div className="lg:col-span-2 glass rounded-2xl p-5 border border-white/5 flex flex-col justify-center">
+          <div className="flex items-center gap-2 mb-3">
+             <Terminal size={14} className="text-primary" />
+             <h3 className="text-[10px] font-black tracking-widest text-slate-500 uppercase">EVENT DETECTED</h3>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+             {liveEvents.length > 0 ? (
+               liveEvents.map(e => (
+                 <span key={e} className="px-3 py-1 bg-white/5 border border-white/10 rounded-full text-[10px] font-black text-white/80 tracking-widest">
+                   {e}
+                 </span>
+               ))
+             ) : (
+               <span className="text-[10px] font-mono text-slate-600 italic flex items-center gap-2">
+                 <Zap size={10} className="animate-pulse" /> SYSTEM IDLE • MONITORING CHANNELS
+               </span>
+             )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

@@ -1,9 +1,9 @@
 import React, { useState } from 'react'
 import { Bell, BellOff, Timer, PhoneCall } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useSafetyStore } from '../store/safetyStore'
-import { useCountdown } from '../hooks/useCountdown'
-import { triggerAlert } from '../utils/api'
+import { useSafetyStore } from './safetyStore'
+import { useCountdown } from './useCountdown'
+import { triggerAlert } from './apiClient'
 import toast from 'react-hot-toast'
 
 export default function AlertPanel() {

@@ -1,20 +1,47 @@
-import React from 'react'
-import { useWebSocket } from './hooks/useWebSocket'
-import Header from './components/Header'
-import InputDashboard from './components/InputDashboard'
-import ThreatIndicator from './components/ThreatIndicator'
-import RiskChart from './components/RiskChart'
-import AlertPanel from './components/AlertPanel'
-import HistoryLog from './components/HistoryLog'
-import AudioDetector from './components/AudioDetector'
+import React, { useState } from 'react'
+import { useWebSocket } from './useWebSocket'
+import LandingPage from './LandingPage'
+import Sidebar from './Sidebar'
+import Header from './Header'
+import { useSafetyStore } from './safetyStore'
+
+// View Components
+import DashboardView from './DashboardView'
+import AnalyticsView from './AnalyticsView'
+import IncidentsView from './IncidentsView'
+import SimulationLabView from './SimulationLabView'
+import DevicesView from './DevicesView'
+import AlertsView from './AlertsView'
+import SettingsView from './SettingsView'
+import AcademicView from './AcademicView'
 
 export default function App() {
+  const [showApp, setShowApp] = useState(false)
+  const { activeView } = useSafetyStore()
   useWebSocket()
 
-  return (
-    <div className="min-h-screen bg-base noise relative">
-      <div className="scan-overlay" />
+  if (!showApp) {
+    return <LandingPage onStart={() => setShowApp(true)} />
+  }
 
+  const renderView = () => {
+    switch(activeView) {
+      case 'dashboard': return <DashboardView />
+      case 'analytics': return <AnalyticsView />
+      case 'incidents': return <IncidentsView />
+      case 'simulation': return <SimulationLabView />
+      case 'devices': return <DevicesView />
+      case 'alerts': return <AlertsView />
+      case 'settings': return <SettingsView />
+      case 'academic': return <AcademicView />
+      default: return <DashboardView />
+    }
+  }
+
+  return (
+    <div className="flex h-screen w-full bg-base noise relative dark overflow-hidden text-slate-100">
+      <div className="scan-overlay opacity-20 pointer-events-none" />
+      
       {/* Background grid */}
       <div
         className="fixed inset-0 opacity-[0.03] pointer-events-none"
@@ -24,26 +51,16 @@ export default function App() {
         }}
       />
 
-      <div className="relative z-10 max-w-7xl mx-auto px-4 py-6">
-        <Header />
+      <Sidebar />
 
-        {/* Main grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-6">
-
-          {/* Left column */}
-          <div className="lg:col-span-2 flex flex-col gap-4">
-            <ThreatIndicator />
-            <RiskChart />
-            <InputDashboard />
+      <div className="flex-1 flex flex-col h-full overflow-hidden relative z-10 transition-all">
+        <div className="px-8 py-4 border-b border-white/5 bg-[#0a0e17]/50 backdrop-blur-md">
+           <Header />
+        </div>
+        <div className="flex-1 overflow-y-auto p-6 scroll-smooth">
+          <div className="max-w-[1600px] mx-auto w-full">
+            {renderView()}
           </div>
-
-          {/* Right column */}
-          <div className="flex flex-col gap-4">
-            <AlertPanel />
-            <AudioDetector />
-            <HistoryLog />
-          </div>
-
         </div>
       </div>
     </div>

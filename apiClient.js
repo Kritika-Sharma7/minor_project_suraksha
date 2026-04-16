@@ -38,4 +38,22 @@ export const resetEngine = () =>
 export const getAlertStatus = () =>
   api.get('/alert-status').then((r) => r.data)
 
+export const getProfile = () =>
+  api.get('/profile').then((r) => r.data)
+
+export const updateProfile = (payload) =>
+  api.put('/profile', payload).then((r) => r.data)
+
+export const getContacts = () =>
+  api.get('/contacts').then((r) => r.data)
+
+export const addContact = (payload) =>
+  api.post('/contacts', payload).then((r) => r.data)
+
+export const getIncidents = (limit = 100) =>
+  api.get('/incidents', { params: { limit } }).then((r) => r.data)
+
+export const getThreatMap = (limit = 300) =>
+  api.get('/threat-map', { params: { limit } }).then((r) => r.data)
+
 export default api

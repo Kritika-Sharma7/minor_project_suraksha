@@ -25,16 +25,17 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-AudioClass = Literal["scream", "distress", "normal"]
+AudioClass = Literal["scream", "distress", "fight", "normal"]
 
 MODEL_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "models", "audio", "classifier.joblib"
+    os.path.dirname(__file__), "models", "audio", "classifier.joblib"
 )
 
 # Risk score mapping per class
 CLASS_SCORE_MAP: dict[AudioClass, tuple[int, int]] = {
     "scream":   (210, 255),
     "distress": (130, 200),
+    "fight":    (170, 235),
     "normal":   (0,   40),
 }
 
@@ -62,6 +63,16 @@ class AudioMLService:
                 return model
             except Exception as e:
                 logger.warning("Could not load model (%s), using heuristic fallback", e)
+        # Optional embedding model path for wav2vec/whisper style features.
+        emb_path = os.path.join(os.path.dirname(MODEL_PATH), "embedding_classifier.joblib")
+        if os.path.exists(emb_path):
+            try:
+                import joblib
+                model = joblib.load(emb_path)
+                logger.info("✅ Loaded embedding classifier from %s", emb_path)
+                return model
+            except Exception as e:
+                logger.warning("Could not load embedding model (%s), using heuristic fallback", e)
         logger.info("ℹ️  Using heuristic audio classifier")
         return None
 
@@ -75,9 +86,25 @@ class AudioMLService:
             y, sr = librosa.load(io.BytesIO(audio_bytes), sr=sample_rate, mono=True)
             features = self._extract_features(y, sr)
 
+            # Continuous Audio Risk mapping
+            rms_val = features.get("rms_mean", 0.0)
+            centroid_val = features.get("centroid_mean", 0.0)
+            
+            rms_norm = min(rms_val / 0.5, 1.0)
+            centroid_norm = min(centroid_val / 4000.0, 1.0)
+            continuous_risk = int((0.6 * rms_norm + 0.4 * centroid_norm) * 255.0)
+            heuristic_res.risk_score = max(heuristic_res.risk_score, continuous_risk)
+
             if self._model is not None:
-                return self._model_predict(features)
-            return self._heuristic_predict(features)
+                ml_res = self._model_predict(features)
+                final_audio_risk = int(
+                    ml_res.confidence * ml_res.risk_score + 
+                    (1 - ml_res.confidence) * heuristic_res.risk_score
+                )
+                ml_res.risk_score = min(255, final_audio_risk)
+                return ml_res
+
+            return heuristic_res
 
         except ImportError:
             logger.error("librosa not installed — returning neutral score")
@@ -189,16 +216,26 @@ class AudioMLService:
             + bandwidth_score * 0.15
         )
 
+        fight_score = (
+            energy_score * 0.40
+            + zcr_score * 0.25
+            + bandwidth_score * 0.25
+            + centroid_score * 0.10
+        )
+
         # Classification decision
         if scream_score >= 0.65:
             cls: AudioClass = "scream"
             confidence = scream_score
+        elif fight_score >= 0.55:
+            cls = "fight"
+            confidence = fight_score
         elif distress_score >= 0.45 or (rms_mean > 0.05 and pitch_mean > 200):
             cls = "distress"
             confidence = distress_score
         else:
             cls = "normal"
-            confidence = 1.0 - max(scream_score, distress_score)
+            confidence = 1.0 - max(scream_score, distress_score, fight_score)
 
         risk_score = self._score_from_class(cls, confidence)
         return AudioResult(
@@ -273,7 +310,7 @@ def train_and_save_model(dataset_dir: str, output_path: str = MODEL_PATH):
     svc = AudioMLService()
     X, y_labels = [], []
 
-    for label in ("scream", "distress", "normal"):
+    for label in ("scream", "distress", "fight", "normal"):
         folder = os.path.join(dataset_dir, label)
         if not os.path.exists(folder):
             continue

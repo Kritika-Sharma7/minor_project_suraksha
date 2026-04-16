@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useSafetyStore } from '../store/safetyStore'
+import { useSafetyStore } from './safetyStore'
 
 export function useCountdown() {
   const { alertCountdown, tickCountdown } = useSafetyStore()

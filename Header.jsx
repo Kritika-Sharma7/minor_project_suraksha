@@ -1,7 +1,7 @@
 import React from 'react'
 import { Shield, Wifi, WifiOff } from 'lucide-react'
-import { useSafetyStore } from '../store/safetyStore'
-import { resetEngine } from '../utils/api'
+import { useSafetyStore } from './safetyStore'
+import { resetEngine } from './apiClient'
 import toast from 'react-hot-toast'
 
 export default function Header() {
@@ -16,6 +16,38 @@ export default function Header() {
       toast.error('Reset failed')
     }
   }
+
+  const startSensors = async () => {
+    console.log("Button clicked");
+
+    try {
+      // 🎤 MICROPHONE
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+      alert("Mic permission granted");
+
+      // 📍 LOCATION
+      navigator.geolocation.getCurrentPosition(
+        () => alert("Location granted"),
+        () => alert("Location denied")
+      );
+
+      // 📱 MOTION (iPhone)
+      if (typeof DeviceMotionEvent !== "undefined" &&
+          typeof DeviceMotionEvent.requestPermission === "function") {
+
+        const res = await DeviceMotionEvent.requestPermission();
+        alert("Motion: " + res);
+      }
+
+    } catch (err) {
+      console.error(err);
+      if (!navigator.mediaDevices) {
+        alert("🚨 iPhone blocked you! Apple Safari completely disables Microphone and Motion APIs if you don't use 'https://'.");
+      } else {
+        alert("Error details: " + err.message);
+      }
+    }
+  };
 
   return (
     <header className="flex items-center justify-between">
@@ -60,6 +92,14 @@ export default function Header() {
         >
           {threatLevel}
         </div>
+
+        {/* Start Sensors */}
+        <button
+          onClick={startSensors}
+          className="glass rounded-lg px-3 py-1.5 text-xs text-blue-400 hover:text-white transition-colors font-mono font-bold"
+        >
+          START SENSORS
+        </button>
 
         {/* Reset */}
         <button
