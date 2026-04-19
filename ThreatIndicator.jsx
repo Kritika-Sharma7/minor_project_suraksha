@@ -1,7 +1,7 @@
 import React from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useSafetyStore } from './safetyStore'
-import { AlertCircle, ShieldCheck, ShieldAlert, Zap, TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import { AlertCircle, ShieldCheck, ShieldAlert, Zap, TrendingUp, TrendingDown, Minus, Signal, SignalHigh, SignalLow, SignalZero } from 'lucide-react'
 
 const STATE_ORDER = ['SAFE', 'SUSPICIOUS', 'HIGH', 'CRITICAL']
 const STATE_COLORS = {
@@ -52,10 +52,14 @@ function GaugeArc({ pct, color }) {
 }
 
 export default function ThreatIndicator() {
-  const { threatLevel, combinedScore, movingAvg, recommendation, trend, getThreatMeta } = useSafetyStore()
+  const { 
+    threatLevel, combinedScore, movingAvg, recommendation, 
+    trend, getThreatMeta, dangerStreak, countdownMax, reliability 
+  } = useSafetyStore()
+  
   const meta = getThreatMeta()
   const color = STATE_COLORS[threatLevel]
-  const pct   = combinedScore / 255
+  const pct   = combinedScore / 100 // Risk is now 0-100 in backend
 
   const TrendIcon = trend === 'UP' ? TrendingUp : trend === 'DOWN' ? TrendingDown : Minus
 
@@ -87,7 +91,7 @@ export default function ThreatIndicator() {
       <div className="flex flex-col lg:flex-row items-center gap-10 relative z-10">
 
         {/* ── Left: Gauge ── */}
-        <div className="relative flex-shrink-0 group-hover:scale-105 transition-transform duration-500">
+        <div className="relative flex-shrink-0 group-hover:scale-105 transition-transform duration-500 mb-4 lg:mb-0">
           <GaugeArc pct={pct} color={color} />
           
           <div className="absolute inset-0 flex flex-col items-center justify-end pb-4">
@@ -105,15 +109,24 @@ export default function ThreatIndicator() {
             </div>
           </div>
 
-          {/* Critical Pulse */}
+          {/* Countdown Ring for DANGER */}
           <AnimatePresence>
-            {threatLevel === 'CRITICAL' && (
+            {threatLevel === 'HIGH' && dangerStreak > 0 && (
               <motion.div
-                className="absolute inset-0 rounded-full border-4"
-                style={{ borderColor: color }}
-                initial={{ opacity: 0.5, scale: 0.8 }}
-                animate={{ opacity: 0, scale: 1.8 }}
-                transition={{ duration: 1, repeat: Infinity }}
+                className="absolute inset-0 rounded-full border-[6px]"
+                style={{ 
+                  borderColor: color, 
+                  borderTopColor: 'transparent',
+                  borderRightColor: 'transparent',
+                  rotate: -45
+                }}
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ 
+                  opacity: 1, 
+                  scale: 1.1,
+                  rotate: (dangerStreak / countdownMax) * 360 - 45
+                }}
+                exit={{ opacity: 0, scale: 1.2 }}
               />
             )}
           </AnimatePresence>
@@ -123,13 +136,20 @@ export default function ThreatIndicator() {
         <div className="flex-1 text-center lg:text-left">
           <div className="flex flex-col lg:flex-row items-center lg:items-end gap-3 mb-2">
             <motion.h1
-              className="font-display font-black text-4xl sm:text-5xl tracking-tighter"
+              className="font-display font-black text-3xl sm:text-5xl tracking-tighter"
               animate={{ color }}
             >
               {STATE_LABELS[threatLevel]}
             </motion.h1>
-            <div className={`px-2 py-0.5 rounded-md text-[10px] font-black tracking-widest border mb-1.5 ${trend === 'UP' ? 'bg-red-500/10 border-red-500 text-red-500' : 'bg-white/5 border-white/10 text-slate-500'}`}>
-               {trend}
+            <div className="flex gap-2 mb-1.5">
+               <div className={`px-2 py-0.5 rounded-md text-[10px] font-black tracking-widest border ${trend === 'UP' ? 'bg-red-500/10 border-red-500 text-red-500' : 'bg-white/5 border-white/10 text-slate-500'}`}>
+                  {trend}
+               </div>
+               {threatLevel === 'HIGH' && (
+                  <div className="px-2 py-0.5 rounded-md text-[10px] font-black tracking-widest border bg-orange-500/20 border-orange-500 text-orange-200 animate-pulse">
+                     ESCALATION: {dangerStreak}/{countdownMax}
+                  </div>
+               )}
             </div>
           </div>
 
@@ -161,11 +181,12 @@ export default function ThreatIndicator() {
           </div>
         </div>
 
-        {/* ── Right: Temporal Stability ── */}
-        <div className="flex flex-col gap-4">
-           <div className="glass bg-white/[0.03] rounded-3xl p-6 border border-white/5 flex flex-col items-center">
+        {/* ── Right: Temporal Stability & Fusion Monitor ── */}
+        <div className="flex flex-row lg:flex-col gap-4">
+           {/* Stability */}
+           <div className="glass bg-white/[0.03] rounded-3xl p-4 sm:p-6 border border-white/5 flex flex-col items-center">
               <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mb-1">Stability</span>
-              <motion.div className="font-display font-black text-3xl" animate={{ color }}>
+              <motion.div className="font-display font-black text-2xl sm:text-3xl" animate={{ color }}>
                  {Math.round(movingAvg)}
               </motion.div>
               <div className="flex items-center gap-1 mt-1 text-[9px] text-slate-500">
@@ -173,9 +194,31 @@ export default function ThreatIndicator() {
                  <span>TEMPORAL MEAN</span>
               </div>
            </div>
+
+           {/* Fusion Reliability */}
+           <div className="glass bg-white/[0.03] rounded-3xl p-4 sm:p-6 border border-white/5 flex flex-col items-center">
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mb-3">Fusion</span>
+              <div className="flex gap-3">
+                 <SensorReliabilityIcon label="GPS" value={reliability.gps} />
+                 <SensorReliabilityIcon label="AUD" value={reliability.audio} />
+                 <SensorReliabilityIcon label="MOT" value={reliability.motion} />
+              </div>
+           </div>
         </div>
 
       </div>
     </motion.div>
+  )
+}
+
+function SensorReliabilityIcon({ label, value }) {
+  const Icon = value > 0.8 ? SignalHigh : value > 0.4 ? Signal : value > 0 ? SignalLow : SignalZero
+  const color = value > 0.6 ? '#22c55e' : value > 0.2 ? '#f59e0b' : '#ef4444'
+  
+  return (
+    <div className="flex flex-col items-center gap-1" title={`${label} reliability: ${Math.round(value * 100)}%`}>
+       <Icon size={14} style={{ color }} />
+       <span className="text-[8px] font-black text-slate-600 tracking-tighter">{label}</span>
+    </div>
   )
 }

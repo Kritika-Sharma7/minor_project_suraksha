@@ -1,4 +1,5 @@
-import React from 'react'
+import React, { useState } from 'react'
+import { Menu, X } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { 
   LayoutDashboard, 
@@ -24,11 +25,34 @@ const NAV_ITEMS = [
 ]
 
 export default function Sidebar() {
+  const [isOpen, setIsOpen] = useState(false)
   const { activeView, setActiveView, threatLevel, getThreatMeta } = useSafetyStore()
   const meta = getThreatMeta()
 
   return (
-    <div className="w-64 h-full bg-[#0a0e17]/80 backdrop-blur-xl border-r border-white/5 flex flex-col pt-6 z-20 relative">
+    <>
+      {/* Mobile Toggle */}
+      <button 
+        onClick={() => setIsOpen(!isOpen)}
+        className="fixed top-4 right-4 z-50 p-3 glass rounded-2xl lg:hidden text-white border border-white/10"
+      >
+        {isOpen ? <X size={20} /> : <Menu size={20} />}
+      </button>
+
+      {/* Backdrop */}
+      {isOpen && (
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-md z-40 lg:hidden"
+          onClick={() => setIsOpen(false)}
+        />
+      )}
+
+      {/* Sidebar Container */}
+      <div className={`
+        fixed lg:static inset-y-0 left-0 w-64 h-full bg-[#0a0e17]/80 lg:bg-[#0a0e17]/40 backdrop-blur-2xl lg:backdrop-blur-none border-r border-white/5 
+        flex flex-col pt-6 z-40 lg:z-20 transition-transform duration-500 ease-spring
+        ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+      `}>
       <div className="px-6 mb-8 flex flex-col gap-1">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-primary/20 border border-primary/50 relative">
@@ -80,5 +104,6 @@ export default function Sidebar() {
         })}
       </nav>
     </div>
+    </>
   )
 }

@@ -41,6 +41,9 @@ export const useSafetyStore = create((set, get) => ({
   reasons: [],
   confidence: 0,
   weights: { location: 0.3, time: 0.2, motion: 0.3, audio: 0.2 },
+  dangerStreak: 0,
+  countdownMax: 5,
+  reliability: { gps: 1.0, audio: 1.0, motion: 1.0 },
 
   // ── History
   history: [],        // [{timestamp, threatLevel, combinedScore, inputs}]
@@ -140,6 +143,9 @@ export const useSafetyStore = create((set, get) => ({
       timeRisk:       data.inputs?.time ?? get().timeRisk,
       motionRisk:     data.inputs?.motion ?? get().motionRisk,
       audioRisk:      data.inputs?.audio ?? get().audioRisk,
+      dangerStreak:   data.danger_streak || 0,
+      countdownMax:   data.countdown_max || 5,
+      reliability:    data.reliability || get().reliability,
     })
 
     if (data.geo?.lat != null && data.geo?.lon != null) {

@@ -3,8 +3,10 @@ import { MapPin, Clock, Activity, Mic, Waves, Shield, Terminal, Zap, Info, Trend
 import { useSafetyStore } from './safetyStore'
 import { motion } from 'framer-motion'
 
-function SignalCard({ title, value, icon: Icon, desc, active, color = 'primary' }) {
-  const pct = (value / 255) * 100
+function SignalCard({ title, value, icon: Icon, desc, active, reliability = 1.0, color = 'primary' }) {
+  const pct = value // Risk is 0-100
+  const reliabilityPct = Math.round(reliability * 100)
+  
   return (
     <div
       className="glass rounded-2xl p-4 border relative overflow-hidden transition-all duration-300 group hover:bg-white/[0.02]"
@@ -17,18 +19,26 @@ function SignalCard({ title, value, icon: Icon, desc, active, color = 'primary' 
           </div>
           <p className="text-[10px] text-white font-black tracking-widest uppercase opacity-70">{title}</p>
         </div>
-        <div className="flex items-center gap-1">
-           <span className={`w-1 h-1 rounded-full ${active ? 'bg-primary animate-pulse' : 'bg-slate-700'}`} />
-           <span className="text-[8px] font-black text-slate-500 font-mono tracking-tighter">LIVE</span>
+        <div className="flex items-center gap-1.5">
+           <div className="flex h-1.5 w-6 gap-0.5 items-end">
+              {[0.2, 0.4, 0.6, 0.8].map(h => (
+                <div 
+                  key={h} 
+                  className={`flex-1 rounded-sm ${reliability >= h ? 'bg-primary' : 'bg-white/10'}`} 
+                  style={{ height: `${h * 100}%` }}
+                />
+              ))}
+           </div>
+           <span className="text-[8px] font-black text-slate-500 font-mono tracking-tighter">{reliabilityPct}%</span>
         </div>
       </div>
       
       <div className="flex items-end justify-between mb-4 relative z-10">
-        <span className="font-display text-3xl font-black text-white">{value}</span>
-        <span className="text-[10px] text-slate-500 font-mono">INTENSITY</span>
+        <span className="font-display text-4xl font-black text-white">{Math.round(value)}</span>
+        <span className="text-[10px] text-slate-500 font-mono">STRESS LVL</span>
       </div>
 
-      <p className="text-[10px] text-slate-400 font-medium mb-3 min-h-[1.5rem] leading-tight relative z-10">{desc}</p>
+      <p className="text-[10px] text-slate-400 font-medium mb-3 min-h-[2rem] leading-tight relative z-10">{desc}</p>
       
       <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden relative z-10">
          <motion.div 
@@ -56,41 +66,46 @@ export default function InputDashboard() {
     riskDelta,
     liveEvents,
     trend,
-    getThreatMeta
+    getThreatMeta,
+    reliability
   } = useSafetyStore()
 
   const meta = getThreatMeta()
 
   return (
     <div className="w-full space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <SignalCard
-          title="Location Depth"
+          title="GPS Logic"
           value={locationRisk}
           icon={MapPin}
-          desc={sensorFrame.location.lat ? `Accuracy: ±${sensorFrame.location.accuracy.toFixed(1)}m | Iso: ${sensorFrame.location.isolation.toFixed(2)}` : 'Waiting for GPS anchor...'}
+          desc={sensorFrame.location.lat ? `±${sensorFrame.location.accuracy.toFixed(0)}m accuracy | ${sensorFrame.location.speed || 0} km/h` : 'Calibrating GPS...'}
           active={sensorsEnabled.location}
+          reliability={reliability.gps}
         />
         <SignalCard
-          title="Temporal Context"
+          title="Temporal"
           value={timeRisk}
           icon={Clock}
-          desc={`Weight: ${useSafetyStore.getState().weights.time.toFixed(2)} | Cycle: ${timeRisk > 100 ? 'Nocturnal' : 'Diurnal'}`}
+          desc={`Security Cycle: ${timeRisk > 10 ? 'Nocturnal Mode' : 'Standard Dial'}`}
           active
+          reliability={1.0}
         />
         <SignalCard
-          title="Kinetic Vector"
+          title="Motion Lab"
           value={motionRisk}
           icon={Activity}
-          desc={`Acceleration: ${sensorFrame.motion.accelMag.toFixed(2)}m/s² | Shake: ${sensorFrame.motion.shakeScore.toFixed(2)}`}
+          desc={`Acc: ${sensorFrame.motion.accelMag.toFixed(2)}m/s² | Shake: ${sensorFrame.motion.shakeScore.toFixed(0)}`}
           active={sensorsEnabled.motion}
+          reliability={reliability.motion}
         />
         <SignalCard
-          title="Acoustic Profile"
+          title="Acoustics"
           value={audioRisk}
           icon={Mic}
-          desc={`ZCR: ${sensorFrame.audio.zcr.toFixed(3)} | Freq: ${Math.round(sensorFrame.audio.freq)}Hz`}
+          desc={`ZCR: ${sensorFrame.audio.zcr.toFixed(3)} | RMS: ${sensorFrame.audio.rms.toFixed(3)}`}
           active={sensorsEnabled.microphone}
+          reliability={reliability.audio}
         />
       </div>
 

@@ -6,7 +6,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-from threat_engine import ThreatLevel
+from threat_engine import (
+    ThreatEngine, RiskSnapshot, state_color, recommendation
+)
 from alert_service import AlertService
 from ws import broadcast
 
@@ -27,7 +29,7 @@ class RiskResponse(BaseModel):
     combined_score: float
     moving_avg:     float
     risk_delta:     float
-    threat_level:   ThreatLevel
+    threat_level:   str
     alert_triggered: bool
     window_scores:  list[float]
     weights:        dict[str, float]
@@ -41,22 +43,6 @@ class RiskResponse(BaseModel):
     trend:          str
 
 
-def _state_color(level: ThreatLevel) -> str:
-    return {
-        ThreatLevel.SAFE:       "#22c55e",   # green
-        ThreatLevel.SUSPICIOUS: "#f59e0b",   # amber
-        ThreatLevel.HIGH:       "#f97316",   # orange
-        ThreatLevel.CRITICAL:   "#ef4444",   # red
-    }[level]
-
-
-def _recommendation(level: ThreatLevel) -> str:
-    return {
-        ThreatLevel.SAFE:       "Environment appears safe. Continue monitoring.",
-        ThreatLevel.SUSPICIOUS: "Anomalies detected. Stay alert and consider moving to a safer area.",
-        ThreatLevel.HIGH:       "High threat indicators! Move to a public area or contact someone.",
-        ThreatLevel.CRITICAL:   "CRITICAL THREAT! Emergency alert sent. Move to safety immediately.",
-    }[level]
 
 
 @router.post("/analyze-risk", response_model=RiskResponse)
@@ -80,7 +66,7 @@ async def analyze_risk(payload: RiskInput, request: Request):
         import asyncio
         asyncio.create_task(
             alert_svc.trigger_critical_alert(
-                threat_level=snap.threat_level.value,
+                threat_level=snap.threat_level,
                 combined_score=snap.combined_score,
                 location_risk=payload.location_risk,
                 time_risk=payload.time_risk,
@@ -100,8 +86,8 @@ async def analyze_risk(payload: RiskInput, request: Request):
         window_scores=engine.window_scores,
         weights=snap.weights,
         events=snap.events,
-        state_color=_state_color(snap.threat_level),
-        recommendation=_recommendation(snap.threat_level),
+        state_color=state_color(snap.state),
+        recommendation=recommendation(snap.state),
         timestamp=snap.timestamp,
         confidence=snap.confidence,
         reasons=snap.reasons,
@@ -112,7 +98,7 @@ async def analyze_risk(payload: RiskInput, request: Request):
     await broadcast(
         {
             "type": "risk_update",
-            "threat_level": response.threat_level.value,
+            "threat_level": response.threat_level,
             "combined_score": response.combined_score,
             "moving_avg": response.moving_avg,
             "risk_delta": response.risk_delta,
@@ -149,7 +135,7 @@ async def get_history(request: Request, limit: int = 50):
         "items": [
             {
                 "timestamp":     s.timestamp,
-                "threat_level":  s.threat_level.value,
+                "threat_level":  s.threat_level,
                 "combined_score": s.combined_score,
                 "moving_avg":    s.moving_avg,
                 "trend":         s.trend,

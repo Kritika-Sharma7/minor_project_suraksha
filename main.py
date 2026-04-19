@@ -1,10 +1,11 @@
 """
-Women Safety Threat Detection System — FastAPI Backend
+Suraksha AI — FastAPI Backend (v3)
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 
 from config import settings
@@ -15,6 +16,8 @@ import ws
 import profile
 import storage
 from threat_engine import ThreatEngine
+from route_service import RouteService
+from alert_service import start_offline_flush_task
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,17 +26,20 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
-    logger.info("🚀 Starting Women Safety Detection System")
+    logger.info("🚀 Starting Suraksha AI Safety System v3")
     storage.init_db()
     app.state.threat_engine = ThreatEngine()
+    app.state.route_service  = RouteService()
+    # Background task: retry queued SMS messages on Twilio failure
+    asyncio.create_task(start_offline_flush_task())
     yield
     logger.info("🛑 Shutting down")
 
 
 app = FastAPI(
-    title="Women Safety Threat Detection API",
-    description="Real-time multi-modal threat detection with FSM classification",
-    version="2.0.0",
+    title="Suraksha AI — Safety Intelligence API",
+    description="Real-time multi-modal threat detection with FSM classification and explainability",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -57,4 +63,4 @@ app.include_router(profile.router, prefix="/api/v1", tags=["Profile & Storage"])
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.0.0"}
+    return {"status": "ok", "version": "3.0.0"}
