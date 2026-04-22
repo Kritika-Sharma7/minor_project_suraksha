@@ -33,17 +33,18 @@ export const useSafetyStore = create((set, get) => ({
   combinedScore:  0,
   movingAvg:      0,
   windowScores:   [],
-  recommendation: 'Environment appears safe. Continue monitoring.',
+  trend:          'STABLE',
+  recommendation: 'All sensors normal. You are safe.',
   stateColor:     '#22c55e',
   alertTriggered: false,
-  riskDelta: 0,
-  liveEvents: [],
-  reasons: [],
-  confidence: 0,
-  weights: { location: 0.3, time: 0.2, motion: 0.3, audio: 0.2 },
-  dangerStreak: 0,
-  countdownMax: 5,
-  reliability: { gps: 1.0, audio: 1.0, motion: 1.0 },
+  riskDelta:      0,
+  liveEvents:     [],
+  reasons:        [],
+  confidence:     0,
+  dangerStreak:   0,
+  countdownMax:   5,
+  reliability:    { gps: 1.0, audio: 1.0, motion: 1.0 },
+  weights:        { location: 0.25, time: 0.15, motion: 0.35, audio: 0.25 },
 
   // ── History
   history: [],        // [{timestamp, threatLevel, combinedScore, inputs}]
@@ -55,14 +56,21 @@ export const useSafetyStore = create((set, get) => ({
   audioFile:     null,
   audioResult:   null,
   audioLoading:  false,
+  speechActive:   false,   // SpeechRecognition is currently listening
+  lastTranscript: '',      // last phrase heard (any, not just keywords)
+
+  // ── Simulation
+  simulationActive: false,
 
   // ── UI state
-  activeView:     'dashboard',
-  applicationMode:'women',
+  activeView:      'dashboard',
+  applicationMode: 'women',   // 'women' | 'cab'
   isAnalyzing:    false,
   alertCountdown: 0,   // seconds remaining in countdown
   lastAlertTime:  null,
   wsConnected:    false,
+  wsSender:       null,
+  routeStatus:    null,
   profile: {
     name: 'Primary User',
     alert_threshold: 192,
@@ -70,6 +78,23 @@ export const useSafetyStore = create((set, get) => ({
   },
   contacts: [],
   assistantActions: [],
+
+  // ── GPS Behavioral Features (from gpsProcessor.js 3-layer pipeline) ────────
+  // Signal Layer  → raw GPS coords from navigator.geolocation
+  // Feature Layer → distance, speed, stationary_time, distance_from_route, scores
+  // Decision Layer→ confirmed_stop, confirmed_deviation, risk
+  gpsFeatures: {
+    speed: 0,                  // m/s — Feature Layer
+    stationary_time: 0,        // cumulative seconds stopped — Feature Layer
+    confirmed_stop: false,     // Decision Layer (≥3 consecutive slow frames)
+    stop_score: 0,             // 0–1 normalized — Feature Layer
+    deviation_score: 0,        // 0–1 normalized — Feature Layer
+    confirmed_deviation: false, // Decision Layer (≥3 consecutive off-route frames)
+    distance_from_route: 0,    // metres — Signal Layer (raw geometric)
+    risk: 0,                   // 0–1 — Decision Layer
+    risk_255: 0,               // 0–255 for backend scale
+    label: 'Normal',           // Normal | Suspicious | High | Critical
+  },
 
   // ── Setters
   setInput: (key, val) => set({ [key]: Math.max(0, Math.min(255, Number(val))) }),
@@ -109,9 +134,29 @@ export const useSafetyStore = create((set, get) => ({
       alertTriggered: data.alert_triggered,
       confidence: data.confidence,
       reasons: data.reasons,
+      keyword: get().sensorFrame?.audio?.keyword || '',
     }
 
-    const newHistory = [snap, ...get().history].slice(0, 100)
+    // Only add to the event log when:
+    //   (a) threat level changed from previous entry, OR
+    //   (b) it's a non-SAFE event (always capture threats), OR
+    //   (c) 60 seconds have elapsed since the last SAFE entry
+    const prev     = get().history[0]
+    const isThreat = data.threat_level !== 'SAFE'
+    const levelChanged = !prev || prev.threatLevel !== data.threat_level
+    const minutePassed = !prev || (now - prev.timestamp) >= 60_000
+    const shouldLog = isThreat || levelChanged || minutePassed
+
+    const existing = get().history
+    let newHistory = existing
+    if (shouldLog) {
+      const withSnap = [snap, ...existing]
+      // Keep all threat (non-SAFE) entries (up to 50) + only last 5 SAFE entries
+      const threats = withSnap.filter(h => h.threatLevel !== 'SAFE').slice(0, 50)
+      const safes   = withSnap.filter(h => h.threatLevel === 'SAFE').slice(0, 5)
+      // Threats pinned at top, SAFE entries appended below sorted by time
+      newHistory = [...threats, ...safes]
+    }
     const newChart   = [
       ...get().chartData,
       {
@@ -132,12 +177,11 @@ export const useSafetyStore = create((set, get) => ({
       liveEvents:     data.events || [],
       reasons:        data.reasons || [],
       confidence:     data.confidence || 0,
-      weights:        data.weights || get().weights,
       windowScores:   data.window_scores || [],
       recommendation: data.recommendation,
       stateColor:     data.state_color,
       alertTriggered: data.alert_triggered,
-      history:        newHistory,
+      history:        shouldLog ? newHistory : existing,
       chartData:      newChart,
       locationRisk:   data.inputs?.location ?? get().locationRisk,
       timeRisk:       data.inputs?.time ?? get().timeRisk,
@@ -146,6 +190,7 @@ export const useSafetyStore = create((set, get) => ({
       dangerStreak:   data.danger_streak || 0,
       countdownMax:   data.countdown_max || 5,
       reliability:    data.reliability || get().reliability,
+      weights:        data.weights || get().weights,
     })
 
     if (data.geo?.lat != null && data.geo?.lon != null) {
@@ -202,11 +247,24 @@ export const useSafetyStore = create((set, get) => ({
     audioLoading: false,
   }),
 
+  setSpeechActive: (v) => set({ speechActive: v }),
+  setLastTranscript: (t) => set({ lastTranscript: t }),
   setIsAnalyzing: (v) => set({ isAnalyzing: v }),
   setAudioLoading: (v) => set({ audioLoading: v }),
   setAudioFile: (f) => set({ audioFile: f }),
   setWsConnected: (v) => set({ wsConnected: v }),
+  setWsSender: (fn) => set({ wsSender: fn }),
+  sendWsMessage: (message) => {
+    const sender = get().wsSender
+    if (!sender) return false
+    return sender(message)
+  },
+  setRouteStatus: (status) => set({ routeStatus: status }),
   tickCountdown: () => set((s) => ({ alertCountdown: Math.max(0, s.alertCountdown - 1) })),
+
+  setGpsFeatures: (f) => set((s) => ({ gpsFeatures: { ...s.gpsFeatures, ...f } })),
+  setSimulationActive: (v) => set({ simulationActive: v }),
+  setWeights: (w) => set({ weights: w || get().weights }),
 
   getThreatMeta: () => THREAT_META[get().threatLevel] || THREAT_META.SAFE,
 }))

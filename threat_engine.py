@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 _DISTRESS_KEYWORDS: frozenset[str] = frozenset({
     "help", "bachao", "stop", "danger", "save me",
     "please help", "leave me", "let me go", "aaao",
+    "chhodo", "mat karo", "nahi", "chodo mujhe", "police",
 })
 
 # Maps FSM state name → numerical severity (used for trend calculation)
@@ -57,12 +58,21 @@ _STATE_COLORS = {
     "ALERT":   "#ef4444",
 }
 
-_STATE_RECOMMENDATIONS = {
-    "SAFE":    "Environment appears safe. Continue monitoring.",
-    "WARNING": "Anomalies detected. Stay alert and keep trusted contacts informed.",
-    "DANGER":  "High threat indicators detected. Move to a safer / public area now.",
-    "ALERT":   "Critical danger confirmed. Emergency alert sent. Move to safety immediately.",
+_WOMEN_RECOMMENDATIONS = {
+    "SAFE":    "All sensors normal. You are safe.",
+    "WARNING": "Unusual signals detected. Stay alert and be aware of your surroundings.",
+    "DANGER":  "Distress signals confirmed. Move to a public area and contact your emergency contacts.",
+    "ALERT":   "Critical distress confirmed. Emergency alert sent to your contacts. Call police immediately.",
 }
+
+_CAB_RECOMMENDATIONS = {
+    "SAFE":    "Journey on track. Route and speed normal.",
+    "WARNING": "Minor route anomaly detected. Track your journey carefully.",
+    "DANGER":  "Route deviation or unusual stop detected. Share your location with trusted contacts now.",
+    "ALERT":   "Unsafe journey confirmed. Emergency alert sent. Call police and share live location.",
+}
+
+_STATE_RECOMMENDATIONS = _WOMEN_RECOMMENDATIONS  # default
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,8 +131,11 @@ class FeatureSet:
     speed_mps: float = 0.0
     speed_kmh: float = 0.0
     stop_duration_s: float = 0.0
+    stop_score: float = 0.0
     route_deviation: Optional[bool] = None      # None = route unavailable
     route_deviation_m: Optional[float] = None
+    deviation_score: float = 0.0
+    confirmed_deviation: bool = False
     consecutive_dev_frames: int = 0
 
     # Acceleration
@@ -176,6 +189,7 @@ class FeatureExtractor:
         self._stop_duration: float = 0.0
         self._fall_spike_ts: Optional[float] = None # timestamp of spike frame
         self._quiet_frame_count: int = 0
+        self._high_energy_streak: int = 0           # consecutive high-energy speech frames
 
     # ── Public entry point ────────────────────────────────────────────────────
 
@@ -191,14 +205,51 @@ class FeatureExtractor:
         jerk, jerk_v = self._compute_jerk(buffer)
         fall         = self._detect_fall(frame, buffer)
         kw, kw_match = self._extract_keyword(frame)
-        high_e       = frame.audio_rms > settings.audio_high_energy_threshold
+        # High-energy sustained: RMS above threshold AND speech-like ZCR for 2+ consecutive frames.
+        # Single-frame bursts (claps, door slams) don't trigger — only sustained vocal stress.
+        if (frame.audio_rms > settings.audio_high_energy_threshold
+                and frame.audio_zcr > settings.audio_zcr_speech_threshold):
+            self._high_energy_streak += 1
+        else:
+            self._high_energy_streak = 0
+        high_e = self._high_energy_streak >= 2
+
+        # When the backend route service has no route (deviation is None), fall back to
+        # the frontend's pre-computed gps_behavior values from gpsProcessor.js.
+        # This covers: (a) simulation mode injected values, (b) Journey Mode where
+        # the frontend computed deviation against a route already set on screen.
+        if deviation is None and (frame.gps_confirmed_deviation or frame.gps_deviation_score > 0):
+            deviation      = True if frame.gps_confirmed_deviation else False
+            dist           = frame.gps_distance_from_route if frame.gps_distance_from_route > 0 else None
+            dev_frames     = settings.route_deviation_consecutive_frames if frame.gps_confirmed_deviation else 1
+
+        # Stop duration: backend timer OR frontend stationary_time, whichever is larger
+        if frame.gps_stationary_time > stop_dur:
+            stop_dur = frame.gps_stationary_time
+            self._stop_start = frame.timestamp - frame.gps_stationary_time
+
+        # Confirmed stop: backend computation OR frontend decision layer
+        if frame.gps_confirmed_stop and stop_dur < 60:
+            stop_dur = max(stop_dur, 65.0)  # ensure backend threshold crossed
+
+        stop_score   = min(stop_dur / settings.stop_score_window_s, 1.0) if stop_dur > 0 else 0.0
+        deviation_score = 0.0
+        if dist is not None:
+            deviation_score = min(dist / settings.route_deviation_meters, 1.0)
+        elif frame.gps_deviation_score > 0:
+            deviation_score = frame.gps_deviation_score
+        confirmed_dev = (deviation is True and dev_frames >= settings.route_deviation_consecutive_frames) \
+                        or frame.gps_confirmed_deviation
 
         return FeatureSet(
             speed_mps            = round(speed, 3),
             speed_kmh            = round(speed * 3.6, 2),
             stop_duration_s      = round(stop_dur, 1),
+            stop_score           = round(stop_score, 4),
             route_deviation      = deviation,
             route_deviation_m    = dist,
+            deviation_score      = round(deviation_score, 4),
+            confirmed_deviation  = confirmed_dev,
             consecutive_dev_frames = dev_frames,
             total_acc            = round(frame.total_acc, 3),
             jerk_detected        = jerk,
@@ -210,7 +261,7 @@ class FeatureExtractor:
             audio_rms            = round(frame.audio_rms, 4),
             audio_zcr            = round(frame.audio_zcr, 4),
             audio_text           = frame.audio_text,
-            is_night             = self._is_night(),
+            is_night             = self._is_night(frame.client_hour),
             mode                 = frame.mode,
             gps_quality          = self._estimate_gps_quality(frame),
             audio_quality        = self._estimate_audio_quality(frame),
@@ -225,8 +276,22 @@ class FeatureExtractor:
         return 1.0 - ((acc - 50) / 450.0) * 0.9
 
     def _estimate_audio_quality(self, frame: RawSensorFrame) -> float:
-        """0.0 if likely dead sensor (0 RMS)."""
-        return 1.0 if frame.audio_rms > 0 else 0.0
+        """
+        Audio sensor quality (0–1):
+          1.0 — keyword detected (SpeechRecognition is working + keyword caught)
+          1.0 — AudioContext has RMS data (getUserMedia succeeded)
+          0.8 — SpeechRecognition is running but getUserMedia is blocked
+                (exclusive mic lock on Windows Chrome); mic IS online but
+                we only have keyword data, not energy data
+          0.0 — no audio sensor available at all
+        """
+        if frame.audio_text:
+            return 1.0   # keyword matched → definitely working
+        if frame.audio_rms > 0:
+            return 1.0   # AudioContext has data
+        if frame.speech_recognition_active:
+            return 0.8   # SpeechRecognition running, mic online, getUserMedia blocked
+        return 0.0
 
     # ── GPS: speed ────────────────────────────────────────────────────────────
 
@@ -318,8 +383,8 @@ class FeatureExtractor:
     # ── Time ──────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _is_night() -> bool:
-        h = datetime.now().hour
+    def _is_night(client_hour: int | None = None) -> bool:
+        h = client_hour if client_hour is not None else datetime.now().hour
         return h >= 20 or h <= 6
 
 
@@ -329,112 +394,228 @@ class FeatureExtractor:
 
 class RiskEngine:
     """
-    Advanced Sensor Fusion Risk Scorer.
-    Calculates sub-risks for GPS, Motion, Audio, and Context domains,
-    then applies dynamic weights based on Signal Quality (Reliability).
+    Mode-Specific Sensor Fusion Risk Scorer.
+
+    WOMEN SAFETY MODE:
+      Audio is PRIMARY (0.55 weight) — keyword detection + voice energy.
+      Motion is SECONDARY (0.35 weight) — fall, jerk, struggle patterns.
+      GPS is LIGHT (0.10 weight) — only for stationary duration + location.
+      Time context always applied.
+
+    CAB SAFETY MODE:
+      GPS/Route is PRIMARY (0.65 weight) — deviation, stop behaviour, speed.
+      Audio is SUPPORT (0.25 weight) — distress signals inside the cab.
+      Motion is MINIMAL (0.10 weight) — fall only.
+      Time context always applied.
     """
 
     def compute(
         self, features: FeatureSet
     ) -> tuple[float, float, list[str], dict]:
-        # Domain Accumulators
-        gps_risk = 0.0
+        gps_risk    = 0.0
         motion_risk = 0.0
-        audio_risk = 0.0
+        audio_risk  = 0.0
         context_risk = 0.0
         reasons: list[str] = []
+        mode = features.mode
 
-        # ── Context & Adaptive Thresholds ────────────────────────────
+        # ── Context (always applied regardless of mode) ───────────────
         if features.is_night:
             context_risk += 20
-            reasons.append("Context: Night time detected (+20)")
+            reasons.append("Context: Night-time — sensitivity elevated (+20)")
 
-        # Adaptive stationary limit
-        stop_limit = settings.stop_time_threshold  # Default 180s
-        if features.mode == "cab":
-            stop_limit = 120
-        elif features.mode == "elder":
-            stop_limit = 300
+        # ── GPS Domain ────────────────────────────────────────────────
+        if mode == "women":
+            # GPS light-use: only flags dangerously long stationary periods
+            # (helps locate the user; not a primary threat signal)
+            if features.stop_duration_s > settings.stop_time_threshold:
+                gps_risk += 15
+                m, s = divmod(int(features.stop_duration_s), 60)
+                label = f"{m}m {s}s" if m else f"{s}s"
+                reasons.append(f"GPS: Stationary {label} — location noted (+15)")
+            elif features.stop_score > 0.5:
+                gps_risk += 8
+                reasons.append("GPS: Extended stationary period (+8)")
 
-        if features.stop_duration_s > stop_limit:
-            gps_risk += 15
-            m, s = divmod(int(features.stop_duration_s), 60)
-            label = f"{m}m {s}s" if m else f"{s}s"
-            reasons.append(f"GPS: Stationary for {label} (threshold {stop_limit}s) (+15)")
+        else:  # cab mode — GPS is PRIMARY
+            # Base score from normalised deviation + stop scores
+            gps_base = 100.0 * (0.45 * features.deviation_score + 0.35 * features.stop_score)
+            if gps_base > 0:
+                gps_risk += gps_base
+                reasons.append(
+                    f"GPS: Journey anomaly "
+                    f"dev={features.deviation_score:.2f} "
+                    f"stop={features.stop_score:.2f} (+{gps_base:.0f})"
+                )
 
-        # ── GPS Domain ───────────────────────────────────────────────
-        if features.route_deviation is True:
-            if features.consecutive_dev_frames >= settings.route_deviation_consecutive_frames:
+            if features.confirmed_deviation:
+                gps_risk += 25
+                dist_label = (
+                    f"{features.route_deviation_m:.0f}m"
+                    if features.route_deviation_m else "?"
+                )
+                reasons.append(f"GPS: Confirmed route deviation {dist_label} (+25)")
+            elif features.route_deviation is True:
+                reasons.append(
+                    f"GPS: Deviation building "
+                    f"({features.consecutive_dev_frames} frames)"
+                )
+            elif features.route_deviation is None:
+                reasons.append("GPS: Route tracking unavailable")
+
+            if features.stop_duration_s > 120:
+                gps_risk += 20
+                reasons.append("GPS: Vehicle stopped > 2 minutes (+20)")
+
+            # Compounding danger: deviated AND stopped
+            if features.confirmed_deviation and features.stop_duration_s > 120:
                 gps_risk += 30
-                dist_label = f"{features.route_deviation_m:.0f}m" if features.route_deviation_m else "?"
-                reasons.append(f"GPS: Route deviation {dist_label} ({features.consecutive_dev_frames} frames) (+30)")
-                if features.mode == "cab":
-                    gps_risk += 10
-                    reasons.append("GPS: Cab mode deviation penalty (+10)")
-            else:
-                reasons.append(f"GPS: deviation monitoring ({features.consecutive_dev_frames}/N)")
-        elif features.route_deviation is None:
-            reasons.append("GPS: Route tracking unavailable (low signal)")
+                reasons.append("GPS: Stopped off-route > 2 min — HIGH DANGER (+30)")
 
-        # ── Motion Domain ────────────────────────────────────────────
+            # Unusual crawl speed while route is active
+            if (features.route_deviation is not None
+                    and 0 < features.speed_kmh < settings.cab_speed_suspicion_mps * 3.6):
+                gps_risk += 10
+                reasons.append(
+                    f"GPS: Unusually slow {features.speed_kmh:.1f} km/h (+10)"
+                )
+
+        # ── Motion Domain ─────────────────────────────────────────────
         if features.fall_detected:
             motion_risk += 40
-            reasons.append("Motion: Fall detected (+40)")
+            reasons.append("Motion: Fall detected — possible injury (+40)")
+            # Fall is a critical life-safety event; add unweighted context bonus
+            # so that fall alone always reaches DANGER regardless of mode weights.
+            context_risk += 50
+            reasons.append("Context: Fall confirmed — immediate danger (+50)")
 
         if features.jerk_detected:
-            motion_risk += 10
-            reasons.append(f"Motion: Sudden impact {features.jerk_value:.1f} m/s² (+10)")
-
-        # ── Audio Domain ─────────────────────────────────────────────
-        if features.keyword_detected:
-            if features.audio_rms > settings.audio_keyword_energy_threshold:
-                audio_risk += 50
-                reasons.append(f'Audio: Distress keyword "{features.matched_keyword}" + energy (+50)')
+            if mode == "women":
+                # Higher sensitivity in women mode — jerk may indicate struggle
+                motion_risk += 20
+                reasons.append(
+                    f"Motion: Sudden jerk {features.jerk_value:.1f} m/s² "
+                    f"— possible struggle (+20)"
+                )
             else:
-                audio_risk += 35
-                reasons.append(f'Audio: Distress keyword "{features.matched_keyword}" (+35)')
-            
-            if features.audio_zcr > settings.audio_zcr_speech_threshold:
-                audio_risk += 5
-                reasons.append(f"Audio: Confirmed speech ZCR={features.audio_zcr:.2f} (+5)")
-        elif (features.audio_rms > settings.audio_high_energy_threshold
-              and features.audio_zcr > settings.audio_zcr_speech_threshold):
-            audio_risk += 15
-            reasons.append(f"Audio: High intensity speech pattern (+15)")
+                motion_risk += 8
+                reasons.append(
+                    f"Motion: Sudden jerk {features.jerk_value:.1f} m/s² (+8)"
+                )
 
-        # ── ELDER Mode context ───────────────────────────────────────
-        if features.mode == "elder":
-            if features.stop_duration_s > settings.elder_inactive_danger_s:
-                context_risk += 20
-                reasons.append("Context: Elder prolonged inactivity (+20)")
-            elif features.stop_duration_s > settings.elder_inactive_warning_s:
-                context_risk += 10
-                reasons.append("Context: Elder inactivity warning (+10)")
+        # Sustained acceleration above normal — women mode only (struggle pattern)
+        if mode == "women" and features.total_acc > 14.0:
+            motion_risk += 12
+            reasons.append(
+                f"Motion: Abnormal acceleration {features.total_acc:.1f} m/s² "
+                f"— possible struggle (+12)"
+            )
 
-        # ── Sensor Fusion Weighting ──────────────────────────────────
-        w_gps = features.gps_quality
+        # Graduated severity for extreme G-forces (violent assault / hard impact)
+        if mode == "women" and features.total_acc > 30.0:
+            motion_risk += 20
+            reasons.append(
+                f"Motion: Violent impact {features.total_acc:.1f} m/s² "
+                f"— assault pattern (+20)"
+            )
+
+        # ── Audio Domain ──────────────────────────────────────────────
+        if features.keyword_detected:
+            if mode == "women":
+                # Women mode: audio is PRIMARY (0.55 weight).
+                # Scores are set high enough so that keyword alone guarantees
+                # at minimum WARNING (risk > 30), and keyword + energy reaches DANGER (risk > 60).
+                if features.audio_rms > settings.audio_keyword_energy_threshold:
+                    audio_risk += 80   # 0.55 * 80 = 44 → DANGER threshold hit
+                    reasons.append(
+                        f'Audio: Distress keyword "{features.matched_keyword}" '
+                        f'+ stressed voice (+80)'
+                    )
+                else:
+                    audio_risk += 60   # 0.55 * 60 = 33 → WARNING threshold hit
+                    reasons.append(
+                        f'Audio: Distress keyword "{features.matched_keyword}" '
+                        f'detected (+60)'
+                    )
+                if features.audio_zcr > settings.audio_zcr_speech_threshold:
+                    audio_risk += 15
+                    reasons.append(
+                        f"Audio: Stressed speech confirmed "
+                        f"ZCR={features.audio_zcr:.2f} (+15)"
+                    )
+            else:  # cab mode
+                if features.audio_rms > settings.audio_keyword_energy_threshold:
+                    audio_risk += 35
+                    reasons.append(
+                        f'Audio: Distress keyword "{features.matched_keyword}" '
+                        f'in cab (+35)'
+                    )
+                else:
+                    audio_risk += 25
+                    reasons.append(
+                        f'Audio: Distress keyword "{features.matched_keyword}" (+25)'
+                    )
+
+
+        # Sustained vocal stress fallback — fires when SpeechRecognition misses the keyword.
+        # Requires 2 consecutive frames: high RMS + speech-like ZCR (filters noise/impacts).
+        # Score raised to 65 so that a clear scream signature alone crosses WARNING (risk > 30).
+        if not features.keyword_detected and mode == "women" and features.high_energy:
+            audio_risk += 65
+            reasons.append(
+                f"Audio: Sustained vocal stress "
+                f"RMS={features.audio_rms:.2f} ZCR={features.audio_zcr:.2f} (+65)"
+            )
+
+        # Combined cross-sensor danger: simultaneous acoustic distress + violent motion.
+        # When both sensors independently flag danger, the compounded risk warrants DANGER state.
+        if mode == "women" and features.high_energy and features.total_acc > 25.0:
+            context_risk += 20
+            reasons.append(
+                "Context: Simultaneous vocal distress + violent motion "
+                "— struggle confirmed (+20)"
+            )
+
+        # ── Mode-Specific Sensor Fusion Weights ───────────────────────
+        # Quality weights (0–1) from signal strength
+        w_gps    = features.gps_quality
         w_motion = features.motion_quality
-        w_audio = features.audio_quality
+        w_audio  = features.audio_quality
 
-        raw_risk = (
-            w_gps * gps_risk +
-            w_motion * motion_risk +
-            w_audio * audio_risk +
-            context_risk
-        )
+        if mode == "women":
+            # Audio PRIMARY → Motion SECONDARY → GPS light
+            raw_risk = (
+                0.55 * w_audio  * audio_risk  +
+                0.35 * w_motion * motion_risk +
+                0.10 * w_gps    * gps_risk    +
+                context_risk
+            )
+            if w_audio < 0.1:
+                reasons.append(
+                    "Audio sensor offline — women mode accuracy reduced; "
+                    "motion signals elevated"
+                )
+        else:  # cab
+            # GPS PRIMARY → Audio SUPPORT → Motion minimal
+            raw_risk = (
+                0.65 * w_gps    * gps_risk    +
+                0.25 * w_audio  * audio_risk  +
+                0.10 * w_motion * motion_risk +
+                context_risk
+            )
+            if w_gps < 0.3:
+                reasons.append(
+                    "⚠️ GPS signal weak — cab mode accuracy reduced"
+                )
 
-        # "System is fault-tolerant to sensor failure."
-        if w_gps < 0.3: reasons.append("⚠️ System operating with reduced GPS reliability")
-        if w_audio < 0.1: reasons.append("⚠️ Audio sensor offline — relying on GPS/Motion")
-
-        raw_risk = min(100.0, raw_risk)
+        raw_risk     = min(100.0, raw_risk)
         safety_score = max(0.0, 100.0 - raw_risk)
 
         reliability = {
-            "gps": round(w_gps, 2),
-            "audio": round(w_audio, 2),
-            "motion": round(w_motion, 2),
-            "composite": round((w_gps + w_audio + w_motion) / 3.0, 2)
+            "gps":       round(w_gps, 2),
+            "audio":     round(w_audio, 2),
+            "motion":    round(w_motion, 2),
+            "composite": round((w_gps + w_audio + w_motion) / 3.0, 2),
         }
 
         return round(raw_risk, 2), round(safety_score, 2), reasons, reliability
@@ -735,10 +916,12 @@ class ThreatEngine:
         self._history: list[RiskSnapshot] = []
 
     def set_mode(self, mode: str) -> None:
-        valid = {"women", "cab", "elder"}
+        valid = {"women", "cab"}
         if mode in valid:
             self._mode = mode
             logger.info("Mode set to: %s", mode)
+        else:
+            logger.warning("Unknown mode '%s', keeping '%s'", mode, self._mode)
 
     def process(
         self,
@@ -755,7 +938,11 @@ class ThreatEngine:
 
         smoothed, persistence = self._smoother.update(raw_risk)
         confidence = ConfidenceScorer.score(persistence)
-        state, alert_triggered = self._fsm.transition(smoothed, persistence)
+        # Keyword and sustained vocal stress both bypass the 15-frame smoother.
+        # Without bypass, a single high-risk frame averaged with 14 safe frames
+        # stays below the WARNING threshold and the FSM never transitions.
+        fsm_risk = raw_risk if (features.keyword_detected or features.high_energy) else smoothed
+        state, alert_triggered = self._fsm.transition(fsm_risk, persistence)
 
         # Detect fast increase for early warning
         risk_delta = round(raw_risk - self._last_risk, 2)
@@ -894,8 +1081,9 @@ def state_color(state: str) -> str:
     return _STATE_COLORS.get(state, "#6b7280")
 
 
-def recommendation(state: str) -> str:
-    return _STATE_RECOMMENDATIONS.get(state, "Monitoring...")
+def recommendation(state: str, mode: str = "women") -> str:
+    recs = _CAB_RECOMMENDATIONS if mode == "cab" else _WOMEN_RECOMMENDATIONS
+    return recs.get(state, "Monitoring...")
 
 
 # Legacy enum alias for any code that still imports ThreatLevel

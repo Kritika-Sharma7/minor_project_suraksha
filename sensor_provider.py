@@ -26,7 +26,7 @@ class RawSensorFrame:
     """Unified internal representation of one sensor tick."""
     # Identity
     timestamp: float
-    mode: str = "women"           # women | cab | elder
+    mode: str = "women"           # women | cab
 
     # GPS (raw, may be None if unavailable)
     lat: float | None = None
@@ -49,6 +49,24 @@ class RawSensorFrame:
 
     # Legacy pass-through (for storage / backward compat)
     audio_class: str = "N/A"
+
+    # True when the client's SpeechRecognition API is running (sent each frame).
+    # When getUserMedia is blocked by SpeechRecognition's exclusive mic lock,
+    # rms stays 0 but the mic IS online — this flag preserves audio quality.
+    speech_recognition_active: bool = False
+
+    # GPS behavioral features (from gpsProcessor.js 3-layer pipeline)
+    # Feature Layer: normalized scores (0.0–1.0)
+    gps_stop_score: float = 0.0
+    gps_deviation_score: float = 0.0
+    gps_stationary_time: float = 0.0   # seconds
+    # Decision Layer: temporally confirmed events
+    gps_confirmed_stop: bool = False
+    gps_confirmed_deviation: bool = False
+    # Signal Layer: raw geometric distance (metres)
+    gps_distance_from_route: float = 0.0
+    # Client local hour (avoids server-timezone night detection bug)
+    client_hour: int | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -138,6 +156,10 @@ class SensorIngestionLayer:
         audio_freq  = _f(audio.get("freq"), 0.0)
         audio_class = str(audio.get("audioClass", "N/A"))
 
+        # ── GPS Behavioral Features (3-layer pipeline output) ────────────────
+        gps_beh = p.get("gps_behavior") or {}
+        raw_hour = p.get("client_hour")
+
         return RawSensorFrame(
             timestamp    = _f(p.get("timestamp"), time.time()),
             mode         = str(p.get("mode", "women")).lower(),
@@ -153,6 +175,15 @@ class SensorIngestionLayer:
             audio_zcr    = audio_zcr,
             audio_freq   = audio_freq,
             audio_class  = audio_class,
+            speech_recognition_active = bool(p.get("speech_recognition_active", False)),
+            # GPS behavior fields
+            gps_stop_score          = _f(gps_beh.get("stop_score"), 0.0),
+            gps_deviation_score     = _f(gps_beh.get("deviation_score"), 0.0),
+            gps_stationary_time     = _f(gps_beh.get("stationary_time"), 0.0),
+            gps_confirmed_stop      = bool(gps_beh.get("confirmed_stop", False)),
+            gps_confirmed_deviation = bool(gps_beh.get("confirmed_deviation", False)),
+            gps_distance_from_route = _f(gps_beh.get("distance_from_route"), 0.0),
+            client_hour             = int(raw_hour) if raw_hour is not None else None,
         )
 
     # ── React Native Geolocation schema ──────────────────────────────────────
@@ -240,7 +271,13 @@ class WebSensorProvider:
 
     def parse(self, payload: dict[str, Any]) -> SensorFrame:
         frame = self._ingestion.normalize(payload)
-        is_night = _is_night_now()
+
+        # Night detection: prefer client's local hour to avoid server-timezone bug
+        if frame.client_hour is not None:
+            h = frame.client_hour
+            is_night = h < 6 or h >= 19
+        else:
+            is_night = _is_night_now()
 
         isolation = min(1.0, frame.gps_accuracy / 200.0)
         loc_base = min(255.0, 50 + isolation * 120)
@@ -248,6 +285,12 @@ class WebSensorProvider:
             loc_base += 35
         if frame.gps_speed < 0.4:
             loc_base += 10
+
+        # GPS behavioral boost (Feature + Decision Layer inputs)
+        behavioral_boost = frame.gps_stop_score * 55 + frame.gps_deviation_score * 70
+        if frame.gps_confirmed_stop and frame.gps_confirmed_deviation:
+            behavioral_boost += 50   # stopped off-route → strong danger signal
+        loc_base += behavioral_boost
         location_risk = int(max(0, min(255, loc_base)))
 
         motion_excess = max(0.0, frame.total_acc - 9.81)
@@ -263,6 +306,14 @@ class WebSensorProvider:
             events.append("DISTRESS_KEYWORD")
         if frame.total_acc > 25:
             events.append("FALL_DETECTED")
+
+        # GPS behavioral events (Decision Layer)
+        if frame.gps_confirmed_deviation:
+            events.append("ROUTE_DEVIATION")
+        if frame.gps_confirmed_stop and frame.gps_stationary_time > 120:
+            events.append("PROLONGED_STOP")
+        if frame.gps_confirmed_stop and frame.gps_confirmed_deviation:
+            events.append("STOPPED_OFF_ROUTE")
 
         return SensorFrame(
             location_risk=location_risk,

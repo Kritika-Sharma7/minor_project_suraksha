@@ -86,11 +86,13 @@ class AudioMLService:
             y, sr = librosa.load(io.BytesIO(audio_bytes), sr=sample_rate, mono=True)
             features = self._extract_features(y, sr)
 
-            # Continuous Audio Risk mapping
-            rms_val = features.get("rms_mean", 0.0)
+            # Heuristic classification (must come before continuous_risk augmentation)
+            heuristic_res = self._heuristic_predict(features)
+
+            # Continuous Audio Risk: augment heuristic score with RMS + spectral centroid
+            rms_val      = features.get("rms_mean", 0.0)
             centroid_val = features.get("centroid_mean", 0.0)
-            
-            rms_norm = min(rms_val / 0.5, 1.0)
+            rms_norm     = min(rms_val / 0.5, 1.0)
             centroid_norm = min(centroid_val / 4000.0, 1.0)
             continuous_risk = int((0.6 * rms_norm + 0.4 * centroid_norm) * 255.0)
             heuristic_res.risk_score = max(heuristic_res.risk_score, continuous_risk)

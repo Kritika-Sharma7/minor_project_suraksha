@@ -1,10 +1,10 @@
 import React from 'react'
-import { Smartphone, Mic, Activity, MapPin, Cpu, Signal, ShieldCheck, Zap } from 'lucide-react'
+import { Smartphone, Mic, Activity, MapPin, Cpu, Signal, ShieldCheck, Zap, Radio } from 'lucide-react'
 import { useSafetyStore } from './safetyStore'
 import { motion } from 'framer-motion'
 
 export default function DevicesView() {
-  const { sensorsEnabled, sensorFrame } = useSafetyStore()
+  const { sensorsEnabled, sensorFrame, speechActive, lastTranscript } = useSafetyStore()
 
   const sensors = [
     {
@@ -13,7 +13,7 @@ export default function DevicesView() {
       icon: Mic,
       color: 'blue',
       enabled: sensorsEnabled.microphone,
-      desc: 'Broadband audio sampling using Web Audio API.',
+      desc: 'Broadband audio sampling using Web Audio API (8× gain).',
       metrics: [
          { label: 'RMS', value: sensorFrame.audio.rms.toFixed(4) },
          { label: 'ZCR', value: sensorFrame.audio.zcr.toFixed(2) }
@@ -85,7 +85,7 @@ export default function DevicesView() {
             <p className="text-xs text-slate-500 font-medium leading-relaxed mb-6 h-10">{s.desc}</p>
 
             {/* Metrics */}
-            <div className="grid grid-cols-2 gap-4 mb-8">
+            <div className="grid grid-cols-2 gap-4 mb-4">
                {s.metrics.map(m => (
                  <div key={m.label} className="bg-white/[0.03] rounded-2xl p-4 border border-white/5">
                     <div className="text-[9px] font-black text-slate-600 uppercase tracking-widest mb-1">{m.label}</div>
@@ -93,6 +93,40 @@ export default function DevicesView() {
                  </div>
                ))}
             </div>
+
+            {/* SpeechRecognition live status — only for mic card */}
+            {s.id === 'mic' && (
+              <div className="mb-6 rounded-2xl border border-white/5 bg-white/[0.02] p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Radio size={11} className={speechActive ? 'text-green-400 animate-pulse' : 'text-slate-600'} />
+                  <span className="text-[9px] font-black tracking-widest text-slate-500 uppercase">
+                    Keyword Engine
+                  </span>
+                  <span className={`ml-auto text-[9px] font-black tracking-widest px-2 py-0.5 rounded-full ${
+                    speechActive
+                      ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                      : 'bg-white/5 text-slate-600 border border-white/5'
+                  }`}>
+                    {speechActive ? 'LISTENING' : 'IDLE'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {sensorFrame.audio.keyword_detected ? (
+                    <span className="text-[11px] font-mono text-red-400 font-bold">
+                      ⚠ &quot;{sensorFrame.audio.keyword}&quot; detected
+                    </span>
+                  ) : lastTranscript ? (
+                    <span className="text-[11px] font-mono text-slate-400 truncate">
+                      Heard: &quot;{lastTranscript}&quot;
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-mono text-slate-600 italic">
+                      Say &quot;help&quot;, &quot;bachao&quot; or &quot;police&quot;…
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
 
             <div className="flex items-start gap-3 pt-6 border-t border-white/5 font-mono">
                <Zap size={12} className="text-amber-400 mt-0.5" />

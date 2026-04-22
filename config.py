@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     mapbox_token: str = ""
     google_maps_key: str = ""
     # Which provider to use: "mapbox" | "google"
-    route_api_provider: str = "mapbox"
+    route_api_provider: str = "google"
 
     # ── Sliding-window / Temporal ────────────────────────────────────────────
     window_size: int = 15                   # frames kept in StreamBuffer
@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     # ── GPS thresholds ───────────────────────────────────────────────────────
     stop_speed_threshold: float = 1.0       # m/s  — below this = stationary
     stop_time_threshold: int = 180          # seconds before stationary penalty
+    stop_score_window_s: int = 300          # seconds for normalized stop_score (0–1)
     route_deviation_meters: float = 200.0   # meters off-route
 
     # ── Audio thresholds ─────────────────────────────────────────────────────
@@ -93,12 +94,10 @@ class Settings(BaseSettings):
     audio_zcr_speech_threshold: float = 0.15
 
     # ── Cab mode ─────────────────────────────────────────────────────────────
-    cab_speed_suspicion_mps: float = 2.0          # crawl speed while route active
-
-    # ── Elder mode inactivity tiers ──────────────────────────────────────────
-    # "Inactivity thresholds detect possible medical emergencies."
-    elder_inactive_warning_s: int = 300           # 5 min → warning
-    elder_inactive_danger_s: int = 600            # 10 min → danger tier
+    # Crawl speed (m/s) below which we flag slow movement while route is active
+    cab_speed_suspicion_mps: float = 2.0
+    # Seconds a cab can be stopped before triggering a stop-behaviour penalty
+    cab_stop_threshold_s: int = 120
 
     # ── WebSocket heartbeat ──────────────────────────────────────────────────
     ws_heartbeat_interval_s: int = 25             # server-ping interval (seconds)
@@ -106,6 +105,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"   # silently skip VITE_ and other frontend-only vars
 
 
 settings = Settings()

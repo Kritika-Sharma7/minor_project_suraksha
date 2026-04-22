@@ -113,15 +113,30 @@ async def threat_stream(websocket: WebSocket):
 
                 # Trigger external alert on ALERT state
                 if snap.alert_triggered:
-                    asyncio.create_task(
-                        _alert_svc.trigger_critical_alert(
+                    async def _fire_alert_and_log(snap=snap):
+                        result = await _alert_svc.trigger_critical_alert(
                             threat_level  = snap.threat_level,
                             combined_score= snap.risk,
                             reasons       = snap.reasons,
                             lat           = snap.lat,
                             lon           = snap.lon,
                         )
-                    )
+                        logger.info(
+                            "[Alert] SMS=%s | Email=%s | Level=%s | Score=%.1f | lat=%s lon=%s",
+                            "✓ SENT" if result["sms_sent"]   else "✗ FAILED",
+                            "✓ SENT" if result["email_sent"] else "✗ FAILED",
+                            snap.threat_level,
+                            snap.risk,
+                            f"{snap.lat:.5f}" if snap.lat else "N/A",
+                            f"{snap.lon:.5f}" if snap.lon else "N/A",
+                        )
+                        await broadcast({
+                            "type":       "alert_sent",
+                            "sms_sent":   result["sms_sent"],
+                            "email_sent": result["email_sent"],
+                            "timestamp":  result["timestamp"],
+                        })
+                    asyncio.create_task(_fire_alert_and_log())
 
                 await broadcast(update)
 
@@ -205,8 +220,11 @@ def _build_risk_update(snap: RiskSnapshot, raw_payload: dict) -> dict:
             "speed_mps":            feat.speed_mps,
             "speed_kmh":            feat.speed_kmh,
             "stop_duration_s":      feat.stop_duration_s,
+            "stop_score":           feat.stop_score,
             "route_deviation":      feat.route_deviation,
             "route_deviation_m":    feat.route_deviation_m,
+            "deviation_score":      feat.deviation_score,
+            "confirmed_deviation":  feat.confirmed_deviation,
             "consecutive_dev_frames": feat.consecutive_dev_frames,
             "total_acc":            feat.total_acc,
             "jerk_detected":        feat.jerk_detected,
@@ -219,11 +237,30 @@ def _build_risk_update(snap: RiskSnapshot, raw_payload: dict) -> dict:
             "high_energy":          feat.high_energy,
             "is_night":             feat.is_night,
         },
+        # Individual sensor contributions for InputDashboard cards (0-100 scale)
+        "inputs": {
+            "audio":    round(min(100, (
+                80 if feat.keyword_detected and feat.audio_rms > 0.15 else
+                60 if feat.keyword_detected else
+                int(feat.audio_rms * 200 + feat.audio_zcr * 100)
+            )), 1),
+            "motion":   round(min(100, (
+                70 if feat.fall_detected else
+                40 if feat.jerk_detected else
+                max(0, (feat.total_acc - 9.81) * 5)
+            )), 1),
+            "location": round(min(100, (
+                30 if feat.confirmed_deviation else
+                15 if feat.stop_duration_s > 180 else
+                int(feat.deviation_score * 30 + feat.stop_score * 15)
+            )), 1),
+            "time":     80 if feat.is_night else 30,
+        },
         # Location + metadata
         "geo":             {"lat": snap.lat, "lon": snap.lon},
         "mode":            snap.mode,
         "state_color":     state_color(snap.state),
-        "recommendation":  recommendation(snap.state),
+        "recommendation":  recommendation(snap.state, snap.mode),
         "timestamp":       snap.timestamp,
         # Legacy compatibility fields
         "window_scores":   snap.window_scores,
