@@ -43,9 +43,13 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 _DISTRESS_KEYWORDS: frozenset[str] = frozenset({
+    # Latin script
     "help", "bachao", "stop", "danger", "save me",
-    "please help", "leave me", "let me go", "aaao",
-    "chhodo", "mat karo", "nahi", "chodo mujhe", "police",
+    "please help", "leave me", "let me go", "aao",
+    "chhodo", "chodo", "mat karo", "nahi", "chodo mujhe", "police",
+    # Devanagari — hi-IN speech model transcribes English words into these
+    "हेल्प", "पुलिस", "स्टॉप", "डेंजर",
+    "बचाओ", "छोड़ो", "मत करो", "नहीं", "आओ",
 })
 
 # Maps FSM state name → numerical severity (used for trend calculation)
@@ -426,8 +430,28 @@ class RiskEngine:
 
         # ── GPS Domain ────────────────────────────────────────────────
         if mode == "women":
-            # GPS light-use: only flags dangerously long stationary periods
-            # (helps locate the user; not a primary threat signal)
+            # Route deviation — secondary signal in women mode (primary = audio).
+            # A confirmed deviation (off-route for 3+ consecutive frames) raises
+            # suspicion; stopped off-route for >2 min is a strong danger signal.
+            if features.confirmed_deviation:
+                gps_risk += 20
+                dist_label = (
+                    f"{features.route_deviation_m:.0f}m"
+                    if features.route_deviation_m else "?"
+                )
+                reasons.append(f"GPS: Confirmed route deviation {dist_label} (+20)")
+            elif features.deviation_score > 0.3:
+                gps_risk += 8
+                reasons.append(
+                    f"GPS: Deviation building "
+                    f"({features.consecutive_dev_frames} frames, "
+                    f"score={features.deviation_score:.2f}) (+8)"
+                )
+
+            if features.confirmed_deviation and features.stop_duration_s > 120:
+                gps_risk += 25
+                reasons.append("GPS: Stopped off-route > 2 min — HIGH DANGER (+25)")
+
             if features.stop_duration_s > settings.stop_time_threshold:
                 gps_risk += 15
                 m, s = divmod(int(features.stop_duration_s), 60)

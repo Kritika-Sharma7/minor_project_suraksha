@@ -148,11 +148,12 @@ class RouteService:
     def has_route(self) -> bool:
         return self._has_route and len(self._route) >= 2
 
-    def store_route(self, route: Route) -> None:
+    def store_route(self, route: Route, provider: str = "frontend") -> None:
         self._route = route
         self._has_route = bool(route)
+        self._provider_used = provider
         self._dev_streak = 0
-        logger.info("Route stored: %d waypoints", len(route))
+        logger.info("Route stored: %d waypoints (provider=%s)", len(route), provider)
 
     def clear_route(self) -> None:
         self._route = []

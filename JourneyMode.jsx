@@ -159,10 +159,17 @@ export default function JourneyMode() {
       devDetRef.current.setRoute(routePoints)
 
       const leg = result.routes?.[0]?.legs?.[0]
-      if (isCabMode && leg) {
+      if (leg) {
         const start = [leg.start_location.lat(), leg.start_location.lng()]
         const end = [leg.end_location.lat(), leg.end_location.lng()]
-        const sent = sendWsMessage({ type: 'set_route', start, destination: end })
+        // Send the pre-computed waypoints so backend stores the SAME route
+        // the frontend is using (walking vs driving), avoiding a second fetch.
+        const sent = sendWsMessage({
+          type: 'set_route',
+          start,
+          destination: end,
+          waypoints: routePoints.map(p => [p.lat, p.lon]),
+        })
         if (!sent) toast.error('Backend route sync failed — WebSocket offline')
       }
 

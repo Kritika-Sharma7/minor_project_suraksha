@@ -3,10 +3,23 @@ import toast from 'react-hot-toast'
 import { useSafetyStore } from './safetyStore'
 
 // Must stay in sync with backend threat_engine.py _DISTRESS_KEYWORDS
+// hi-IN lang transcribes English words into Devanagari (हेल्प, पुलिस, स्टॉप, डेंजर)
+// so we match both the Latin and Devanagari forms.
 const DISTRESS_KEYWORDS = [
+  // English (Latin script)
   'help', 'bachao', 'stop', 'danger', 'save me',
-  'please help', 'leave me', 'let me go', 'aaao',
-  'chhodo', 'mat karo', 'nahi', 'chodo mujhe', 'police',
+  'please help', 'leave me', 'let me go', 'aao',
+  'chhodo', 'chodo', 'mat karo', 'nahi', 'chodo mujhe', 'police',
+  // Devanagari transliterations produced by hi-IN speech model
+  'हेल्प',     // help
+  'पुलिस',    // police
+  'स्टॉप',    // stop
+  'डेंजर',    // danger
+  'बचाओ',     // bachao
+  'छोड़ो',    // chhodo
+  'मत करो',   // mat karo
+  'नहीं',     // nahi
+  'आओ',       // aao
 ]
 
 export function useWebSocket() {
@@ -15,6 +28,8 @@ export function useWebSocket() {
   const analyserRef      = useRef(null)
   const sensorTimerRef   = useRef(null)
   const recognitionRef   = useRef(null)
+  const motionListenerRef = useRef(null)   // tracks devicemotion handler for cleanup
+  const peakMotionRef     = useRef(null)   // highest-magnitude sample in current 1s window
 
   const {
     setWsConnected,
@@ -58,6 +73,13 @@ export function useWebSocket() {
 
     // ── Motion / Accelerometer ───────────────────────────────────────────
     const startMotion = () => {
+      // Remove any existing listener before registering a new one.
+      // Without this, every backgroundMonitoring toggle stacks a second listener.
+      if (motionListenerRef.current) {
+        window.removeEventListener('devicemotion', motionListenerRef.current)
+        motionListenerRef.current = null
+      }
+
       const onMotion = (event) => {
         const acc = event.accelerationIncludingGravity || event.acceleration || {}
         const rot = event.rotationRate || {}
@@ -68,15 +90,26 @@ export function useWebSocket() {
         const gy = Number(rot.beta  || 0)
         const gz = Number(rot.gamma || 0)
 
-        const accelMag   = Math.sqrt(ax * ax + ay * ay + az * az)
-        const gyroMag    = Math.sqrt(gx * gx + gy * gy + gz * gz)
-        const shakeScore = Math.max(0, Math.min(1, (accelMag - 9.8) / 20))
-        const fallProb   = Math.max(0, Math.min(1, Math.abs(accelMag - 9.8) / 12))
+        const accelMag     = Math.sqrt(ax * ax + ay * ay + az * az)
+        const gyroMag      = Math.sqrt(gx * gx + gy * gy + gz * gz)
+        const shakeScore   = Math.max(0, Math.min(1, (accelMag - 9.8) / 20))
+        const fallProb     = Math.max(0, Math.min(1, Math.abs(accelMag - 9.8) / 12))
         const runningScore = Math.max(0, Math.min(1, accelMag / 18))
+
+        // Track the peak sample in each 1-second WebSocket window.
+        // devicemotion fires at ~60 Hz; the WS frame only sends once per second.
+        // Without peak-tracking, a 100ms spike (fall, strike) is invisible because
+        // the next setSensorFrame call 16ms later overwrites it with a normal value.
+        const current = peakMotionRef.current
+        if (!current || accelMag > current.accelMag) {
+          peakMotionRef.current = { accelMag, gyroMag, shakeScore, fallProb, runningScore }
+        }
 
         setSensorEnabled('motion', true)
         setSensorFrame({ motion: { accelMag, gyroMag, shakeScore, fallProb, runningScore } })
       }
+
+      motionListenerRef.current = onMotion
 
       // iOS: request permission if needed (will silently fail on mount; the
       // browser will ask when the user first interacts with the page)
@@ -147,17 +180,30 @@ export function useWebSocket() {
         return
       }
 
+      // Stop and discard any existing instance before creating a new one.
+      // Without this, WebSocket reconnects spawn a second recognition that
+      // immediately conflicts and causes an infinite abort loop.
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.onend = null   // prevent the old instance from restarting
+          recognitionRef.current.abort()
+        } catch { /* already stopped */ }
+        recognitionRef.current = null
+      }
+
       const rec = new Recognition()
-      // en-US for English keywords; Hindi words (bachao, chhodo) are still
-      // recognized via Google's multilingual model on this lang setting.
-      // interimResults = false → only fire onresult for final, confirmed words
-      // (more reliable than interim results that change mid-recognition)
-      rec.lang = 'en-US'
-      rec.interimResults = true   // fire on partial results for instant keyword detection
-      rec.continuous     = true
+      // hi-IN recognizes both Hindi (bachao, chhodo, nahi) and common English
+      // distress words (help, police, stop) due to code-switching in Indian speech.
+      rec.lang = 'hi-IN'
+      rec.interimResults  = true
+      rec.continuous      = true
       rec.maxAlternatives = 1
 
+      // Track consecutive aborts so we can back off instead of tight-looping.
+      let consecutiveAborts = 0
+
       rec.onresult = (evt) => {
+        consecutiveAborts = 0  // a result means the recognition is healthy
         for (let ri = evt.resultIndex; ri < evt.results.length; ri++) {
           const result = evt.results[ri]
           const transcript = (result[0]?.transcript || '').toLowerCase().trim()
@@ -168,7 +214,6 @@ export function useWebSocket() {
 
           const matched = DISTRESS_KEYWORDS.find(kw => transcript.includes(kw))
           if (matched) {
-            // Skip if this keyword is already active (avoid re-triggering)
             const currentKeyword = useSafetyStore.getState().sensorFrame?.audio?.keyword
             if (currentKeyword === matched) continue
 
@@ -181,10 +226,8 @@ export function useWebSocket() {
               style: { background: '#1e1e2e', color: '#ef4444', border: '1px solid #ef444440' },
             })
 
-            // Immediate frame so backend scores this right away
             sendFrame()
 
-            // Keep keyword active for 6 s so FSM gets 6 frames and escalates properly
             if (keywordClearTimerRef.current) clearTimeout(keywordClearTimerRef.current)
             keywordClearTimerRef.current = setTimeout(() => {
               setSensorFrame({ audio: { keyword: '', keyword_detected: false } })
@@ -194,43 +237,49 @@ export function useWebSocket() {
         }
       }
 
-      rec.onsoundstart  = () => {
-        setSpeechActive(true)
-        console.log('[Suraksha] Sound detected')
-      }
-      rec.onspeechstart = () => {
-        setSpeechActive(true)
-        console.log('[Suraksha] Speech detected — processing...')
-      }
-      rec.onspeechend   = () => {
-        setSpeechActive(false)
-        console.log('[Suraksha] Speech ended')
-      }
+      rec.onsoundstart  = () => { setSpeechActive(true) }
+      rec.onspeechstart = () => { setSpeechActive(true) }
+      rec.onspeechend   = () => { setSpeechActive(false) }
 
       rec.onerror = (evt) => {
         setSpeechActive(false)
-        console.warn('[Suraksha] SpeechRecognition error:', evt.error)
+        if (evt.error === 'aborted') {
+          // 'aborted' fires when we called abort() ourselves (e.g. cleanup above).
+          // Increment counter so onend uses a back-off delay instead of restarting instantly.
+          consecutiveAborts++
+          return
+        }
+        consecutiveAborts = 0
         if (evt.error === 'not-allowed') {
           toast.error('Microphone permission denied. Please allow mic access.', { duration: 5000 })
         } else if (evt.error === 'network') {
-          console.warn('[Suraksha] SpeechRecognition needs internet (sends to Google). Keyword detection may be unavailable.')
+          console.warn('[Suraksha] SpeechRecognition needs internet. Keyword detection may be unavailable.')
+        } else {
+          console.warn('[Suraksha] SpeechRecognition error:', evt.error)
         }
       }
 
       rec.onend = () => {
         setSpeechActive(false)
-        // Always restart — SpeechRecognition fires onend every ~60s naturally.
-        // Do not gate on backgroundMonitoring: keyword detection must stay alive
-        // as long as the WebSocket connection is open.
+        // If this instance was replaced (ref no longer points to it), do NOT restart.
+        if (recognitionRef.current !== rec) return
+
+        // Back off exponentially on repeated aborts to break infinite-restart loops.
+        // Normal natural end (every ~60 s) has consecutiveAborts === 0 → 200 ms restart.
+        const delay = consecutiveAborts > 5 ? 10000
+                    : consecutiveAborts > 2 ? 3000
+                    : consecutiveAborts > 0 ? 1000
+                    : 200
         setTimeout(() => {
+          if (recognitionRef.current !== rec) return  // replaced while waiting
           try { rec.start() } catch { /* already running */ }
-        }, 200)
+        }, delay)
       }
 
       recognitionRef.current = rec
       try {
         rec.start()
-        console.log('[Suraksha] SpeechRecognition started (lang: en-US, continuous, final-only)')
+        console.log('[Suraksha] SpeechRecognition started (lang: hi-IN, continuous)')
         setSensorEnabled('microphone', true)
       } catch (e) {
         console.warn('[Suraksha] SpeechRecognition failed to start:', e)
@@ -286,6 +335,11 @@ export function useWebSocket() {
         ? state.sensorFrame.audio
         : { ...state.sensorFrame.audio, rms, screamScore, zcr, freq }
 
+      // Use peak motion from the last 1-second window (captures short impacts).
+      // Reset after reading so each WebSocket frame reports its own window's peak.
+      const motionData = peakMotionRef.current || state.sensorFrame.motion
+      peakMotionRef.current = null
+
       const payload = {
         // Mode — critical: tells backend which risk formula to use
         mode: state.applicationMode,
@@ -293,8 +347,8 @@ export function useWebSocket() {
         // GPS
         location: state.sensorFrame.location,
 
-        // Motion
-        motion: state.sensorFrame.motion,
+        // Motion — peak value in this 1s window, not just the last sample
+        motion: motionData,
 
         // Audio (merge live mic metrics with any keyword from speech rec)
         audio: {
@@ -430,11 +484,17 @@ export function useWebSocket() {
         clearInterval(sensorTimerRef.current)
         sensorTimerRef.current = null
       }
+      if (motionListenerRef.current) {
+        window.removeEventListener('devicemotion', motionListenerRef.current)
+        motionListenerRef.current = null
+      }
+      peakMotionRef.current = null
       if (recognitionRef.current) {
         try {
-          recognitionRef.current.onend = null
-          recognitionRef.current.stop()
+          recognitionRef.current.onend = null   // prevent restart on cleanup
+          recognitionRef.current.abort()
         } catch { /* ignore */ }
+        recognitionRef.current = null
       }
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {})

@@ -57,6 +57,26 @@ export function haversine(p1, p2) {
   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
+// ── POINT-TO-SEGMENT DISTANCE ────────────────────────────────────────────────
+
+/**
+ * Minimum distance from point p to the segment (a→b) in metres.
+ * Projects p onto the segment using a flat-earth approximation (valid < 50 km).
+ */
+function pointToSegmentDistance(p, a, b) {
+  const R   = 6371000
+  const lat = (a.lat + b.lat) / 2 * Math.PI / 180
+  const scaleX = R * Math.cos(lat) * Math.PI / 180
+  const scaleY = R * Math.PI / 180
+
+  const px = (p.lon - a.lon) * scaleX,  py = (p.lat - a.lat) * scaleY
+  const dx = (b.lon - a.lon) * scaleX,  dy = (b.lat - a.lat) * scaleY
+  const lenSq = dx * dx + dy * dy
+  if (lenSq === 0) return Math.hypot(px, py)
+  const t = Math.max(0, Math.min(1, (px * dx + py * dy) / lenSq))
+  return Math.hypot(px - t * dx, py - t * dy)
+}
+
 // ── GPS QUALITY FILTER ────────────────────────────────────────────────────────
 
 /**
@@ -162,9 +182,10 @@ export class RouteDeviationDetector {
 
   computeDistance(point) {
     if (!this.route || this.route.length === 0) return 0
+    if (this.route.length === 1) return haversine(point, this.route[0])
     let minDist = Infinity
-    for (const rp of this.route) {
-      const d = haversine(point, rp)
+    for (let i = 0; i < this.route.length - 1; i++) {
+      const d = pointToSegmentDistance(point, this.route[i], this.route[i + 1])
       if (d < minDist) minDist = d
     }
     return minDist

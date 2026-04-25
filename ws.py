@@ -142,27 +142,31 @@ async def threat_stream(websocket: WebSocket):
 
             # ── set_route ─────────────────────────────────────────────
             elif msg_type == "set_route":
-                start_raw = message.get("start")       # [lat, lon]
-                dest_raw  = message.get("destination") # [lat, lon]
-                if (start_raw and dest_raw
-                        and len(start_raw) == 2 and len(dest_raw) == 2):
-                    start = (float(start_raw[0]), float(start_raw[1]))
-                    dest  = (float(dest_raw[0]),  float(dest_raw[1]))
-                    ok = await route_svc.fetch_and_store(start, dest)
-                    summary = route_svc.route_summary()
-                    await websocket.send_json({
-                        "type":     "route_set",
-                        "ok":       ok,
-                        "waypoints": summary["waypoints"],
-                        "provider": summary["provider"],
-                        "summary":  summary,
-                    })
+                waypoints_raw = message.get("waypoints")
+                ok = False
+                if (isinstance(waypoints_raw, list) and len(waypoints_raw) >= 2):
+                    # Frontend sends pre-computed route points (correct travel mode).
+                    # Store them directly — no second API fetch needed.
+                    route = [(float(w[0]), float(w[1])) for w in waypoints_raw]
+                    route_svc.store_route(route)
+                    ok = True
                 else:
-                    await websocket.send_json({
-                        "type":  "route_set",
-                        "ok":    False,
-                        "error": "Invalid start/destination format. Expected [lat, lon] arrays.",
-                    })
+                    start_raw = message.get("start")       # [lat, lon]
+                    dest_raw  = message.get("destination") # [lat, lon]
+                    if (start_raw and dest_raw
+                            and len(start_raw) == 2 and len(dest_raw) == 2):
+                        start = (float(start_raw[0]), float(start_raw[1]))
+                        dest  = (float(dest_raw[0]),  float(dest_raw[1]))
+                        ok = await route_svc.fetch_and_store(start, dest)
+                summary = route_svc.route_summary()
+                await websocket.send_json({
+                    "type":      "route_set",
+                    "ok":        ok,
+                    "waypoints": summary["waypoints"],
+                    "provider":  summary["provider"],
+                    "summary":   summary,
+                    "error":     None if ok else "Invalid route data.",
+                })
 
             # ── set_mode ──────────────────────────────────────────────
             elif msg_type == "set_mode":
@@ -250,7 +254,8 @@ def _build_risk_update(snap: RiskSnapshot, raw_payload: dict) -> dict:
                 max(0, (feat.total_acc - 9.81) * 5)
             )), 1),
             "location": round(min(100, (
-                30 if feat.confirmed_deviation else
+                60 if feat.confirmed_deviation and feat.stop_duration_s > 120 else
+                40 if feat.confirmed_deviation else
                 15 if feat.stop_duration_s > 180 else
                 int(feat.deviation_score * 30 + feat.stop_score * 15)
             )), 1),

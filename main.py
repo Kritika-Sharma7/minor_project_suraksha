@@ -79,8 +79,9 @@ async def health():
 # All API routes are registered above, so this static mount only handles
 # frontend assets. Unknown paths fall back to index.html (SPA routing).
 _dist = os.path.join(os.path.dirname(__file__), "dist")
-if os.path.isdir(_dist):
-    app.mount("/assets", StaticFiles(directory=os.path.join(_dist, "assets")), name="assets")
+_assets = os.path.join(_dist, "assets")
+if os.path.isdir(_dist) and os.path.isdir(_assets):
+    app.mount("/assets", StaticFiles(directory=_assets), name="assets")
 
     @app.get("/{full_path:path}")
     async def spa_fallback(full_path: str):
